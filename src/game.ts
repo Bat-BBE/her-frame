@@ -730,7 +730,7 @@ export class Game {
     await gsap.to(world.bookshelf.position, { z: -1.8 + 2.6, duration: 2.6, ease: 'power2.inOut' });
     ui.flash('#b388ff', 0.4);
     sound.success();
-    await this.cinematic(new THREE.Vector3(-5.8, 1.4, -1.8), new THREE.Vector3(9.5, 5.2, 0.6), 1.6);
+    await this.cinematic(new THREE.Vector3(-5.6, 1.4, -1.8), new THREE.Vector3(9, 6.5, 4), 1.6);
     this.unlock('door');
     this.card('cube', 'Нууц өрөө нээгдлээ! Дотор нь үсэгтэй шоонууд хөвж байна. Тэднээр сүүлчийн нууц үгийг бүтээ.', 8000);
     this.cardAnchor = 'cube3';

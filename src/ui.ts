@@ -64,6 +64,8 @@ class UI {
   private current: ModalReq | null = null;
   private cardTimer = 0;
   cardVisible = false;
+  private lastQuest = '';
+  private lastFilled = 0;
   onCardClose?: () => void;
 
   constructor() {
@@ -84,11 +86,14 @@ class UI {
     const tray = $('tray');
     tray.replaceChildren();
     tray.hidden = slots === 0;
+    const prev = title === this.lastQuest ? this.lastFilled : 0;
     for (let i = 0; i < slots; i++) {
-      const s = h('span', { class: 'slot' + (letters[i] ? ' filled' : '') }, letters[i] ?? '');
+      const s = h('span', { class: 'slot' + (letters[i] ? ' filled' : '') + (letters[i] && i >= prev ? ' pop' : '') }, letters[i] ?? '');
       tray.append(s);
     }
-    gsap.fromTo('#quest', { scale: 0.97 }, { scale: 1, duration: 0.4, ease: 'back.out(3)' });
+    if (title !== this.lastQuest) gsap.fromTo('#quest', { scale: 0.94 }, { scale: 1, duration: 0.5, ease: 'back.out(3)' });
+    this.lastQuest = title;
+    this.lastFilled = letters.length;
   }
 
   nextSlotRect(): DOMRect | null {

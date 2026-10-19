@@ -120,8 +120,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
   background: linear-gradient(160deg, #ffe9a3, var(--gold));
   border: 2px solid #fff3c4;
   box-shadow: 0 0 22px rgba(255, 211, 107, 0.55), inset 0 -3px 0 rgba(0, 0, 0, 0.12);
-  animation: pop 0.45s cubic-bezier(0.3, 1.6, 0.5, 1);
 }
+.slot.pop { animation: pop 0.45s cubic-bezier(0.3, 1.6, 0.5, 1); }
 @keyframes pop { from { transform: scale(0.4) rotate(-12deg); } to { transform: scale(1) rotate(0); } }
 
 .counter {

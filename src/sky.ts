@@ -77,6 +77,7 @@ export class Sky {
   private showerLeft = 0;
   private showerTimer = 0;
   moon: THREE.Mesh;
+  camera?: THREE.Camera;
 
   constructor(scene: THREE.Scene) {
     scene.add(this.group);
@@ -137,7 +138,7 @@ export class Sky {
       new THREE.SphereGeometry(5, 32, 16),
       new THREE.MeshBasicMaterial({ color: new THREE.Color('#fff4d6').multiplyScalar(1.6) }),
     );
-    this.moon.position.set(-30, 32, -90);
+    this.moon.position.set(-60, -16, -42);
     this.group.add(this.moon);
     const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: nebTex, color: '#ffe9b0', transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false }));
     halo.scale.setScalar(40);
@@ -207,8 +208,13 @@ export class Sky {
     );
     const head = new THREE.Mesh(new THREE.SphereGeometry(0.35, 8, 6), new THREE.MeshBasicMaterial({ color: col.clone().multiplyScalar(1.5) }));
     mesh.add(head);
-    mesh.position.set(rand(-35, 25), rand(18, 34), rand(-60, -28));
-    const vel = new THREE.Vector3(rand(-28, -14), rand(-16, -10), rand(2, 8));
+    const cam = this.camera;
+    if (!cam) return;
+    const dir = new THREE.Vector3(rand(-0.4, 1.15), rand(0.15, 1.05), 0.5).unproject(cam).sub(cam.position).normalize();
+    mesh.position.copy(cam.position).addScaledVector(dir, rand(55, 85));
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.quaternion);
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(cam.quaternion);
+    const vel = right.multiplyScalar(-rand(22, 34)).addScaledVector(up, -rand(10, 18));
     mesh.lookAt(mesh.position.clone().add(vel));
     this.group.add(mesh);
     this.meteors.push({ mesh, vel, life: 0, maxLife: rand(1.4, 2.2) });

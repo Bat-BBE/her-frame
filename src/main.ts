@@ -96,6 +96,7 @@ composer.setSize(innerWidth, innerHeight);
 initUI();
 const world = new World(scene);
 const sky = new Sky(scene);
+sky.camera = camera;
 const creature = new Creature(world);
 const game = new Game({
   world, sky, creature, camera, controls, rgbShift, homeView,
