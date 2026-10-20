@@ -7,11 +7,11 @@ import { Sky } from './sky';
 import { Creature } from './creature';
 import { sound } from './audio';
 import { ui, icon, shapeSvg } from './ui';
-import { runStarCatcher, GOAL } from './arcade';
+import { runStarCatcher, GOAL, DURATION } from './arcade';
 import { loadSave, writeSave, wipeSave, type SaveData } from './state';
 import {
   ACHIEVEMENTS, REWARDS, RARITY_LABEL, TITLE_PREFIX, TITLE_NOUN, WORDS, LETTER_SOURCES,
-  GLYPH_ORDER, GLYPH_WALL, QUESTS, HINTS, OBJECTS, type Rarity, type RewardDef,
+  GLYPH_ORDER, GLYPH_WALL, QUESTS, HINTS, OBJECTS, LEVELS, stageToLevel, type Rarity, type RewardDef,
 } from './data';
 import { h, pick, rand, letterTexture, drawGlyph, sleep } from './util';
 
@@ -108,10 +108,11 @@ export class Game {
   refreshHUD() {
     const st = Math.min(this.s.stage, QUESTS.length - 1);
     const q = QUESTS[st];
+    const lvl = LEVELS[stageToLevel(this.s.stage)];
     const map = LETTER_SOURCES[this.s.stage];
     const word = st < 2 ? WORDS[st] : st === 4 ? WORDS[2] : '';
     const letters = map ? this.s.letters.map((id) => map[id]) : st === 4 ? WORDS[2].slice(0, this.cubeIdx).split('') : [];
-    ui.setQuest(st + 1, QUESTS.length, q.title, q.sub, word.length, letters);
+    ui.setQuest(st + 1, QUESTS.length, q.title, q.sub, word.length, letters, lvl);
     ui.setCounter(this.s.achievements.length, ACHIEVEMENTS.length);
   }
 
@@ -262,8 +263,10 @@ export class Game {
       this.s.seen.push(id);
       const hs = this.c.world.hotspots.get(id);
       if (hs) gsap.to(hs.scale, { x: 0, y: 0, duration: 0.3, onComplete: () => { hs.visible = false; } });
+      if (this.s.seen.length === this.c.world.interactives.size) this.unlock('curator');
       this.save();
     }
+    this.countClick();
     this.unlock('hello');
     if (this.glitchOn) this.unlock('glitch');
     const obj = this.c.world.interactives.get(id);
@@ -498,7 +501,7 @@ export class Game {
     const now = performance.now();
     this.lampClicks = this.lampClicks.filter((t) => now - t < 2600);
     this.lampClicks.push(now);
-    if (this.lampClicks.length >= 5 && !this.discoOn) {
+    if (this.lampClicks.length >= 5 && !this.discoOn && !this.blackoutOn) {
       this.lampClicks = [];
       this.disco();
       return;
@@ -593,6 +596,12 @@ export class Game {
     this.s.meteorCount++;
     this.save();
     if (this.s.meteorCount >= 3) this.unlock('stargazer');
+  }
+
+  private countClick() {
+    this.s.totalClicks++;
+    this.save();
+    if (this.s.totalClicks >= 150) this.unlock('curious');
   }
 
   private onBeanbag() {
@@ -709,6 +718,8 @@ export class Game {
     if (k === GLYPH_ORDER.length) {
       this.glyphInput = [];
       void this.openDoor();
+    } else {
+      ui.toast(`Зөв дараалал: ${k}/${GLYPH_ORDER.length} ✦`, 1100);
     }
   }
 
@@ -805,6 +816,7 @@ export class Game {
     this.s.stage = 5;
     this.s.finishedMs = this.s.playMs + (performance.now() - this.playStart);
     this.save();
+    if (this.s.finishedMs <= 6 * 60 * 1000) this.unlock('speedrun');
     this.refreshHUD();
     await this.cinematic(new THREE.Vector3(0.4, 2.6, 0.9), new THREE.Vector3(11, 7.5, 11), 1.4);
     sound.powerDown();
@@ -877,21 +889,46 @@ export class Game {
     });
   }
 
+  /** Which of the 3 endings the player earned — reusing existing save data,
+   *  no new tracking needed. Checked at the moment the finale modal opens. */
+  private endingVariant(): 'collector' | 'speedrun' | 'normal' {
+    if (this.s.achievements.length >= ACHIEVEMENTS.length) return 'collector';
+    if ((this.s.finishedMs ?? this.s.playMs) <= 6 * 60 * 1000) return 'speedrun';
+    return 'normal';
+  }
+
   private openFinaleModal() {
     const total = this.s.finishedMs ?? this.s.playMs;
     const mins = Math.floor(total / 60000);
     const secs = Math.floor((total % 60000) / 1000);
     const owned = REWARDS.filter((r) => this.s.collection[r.id]).length;
+    const copy = {
+      collector: {
+        eyebrow: 'Бүх нууц олдлоо',
+        h2: 'You found every last secret<br/>in Little World',
+        muted: 'Энэ өрөөнд чамаас нуугдах зүйл дахиж үлдсэнгүй — чи жинхэнэ мөрдөгч.',
+      },
+      speedrun: {
+        eyebrow: 'Рекорд хурдаар тайллаа',
+        h2: 'You blazed through<br/>Little World',
+        muted: 'Чи үнэхээр хурдан тайллаа! Гэхдээ яарсандаа алгассан нууц амжилтууд байж магадгүй шүү — дахиад нэг эргэж хараарай.',
+      },
+      normal: {
+        eyebrow: 'Бүх үндсэн таавар тайлагдлаа',
+        h2: 'You explored the entire<br/>Little World',
+        muted: 'Гэхдээ энэ өрөөнд нууц амжилтууд үлдсэн байж магадгүй... Бүх зүйл дээр дарсан уу?',
+      },
+    }[this.endingVariant()];
     const el = h('div', { class: 'finale' });
     el.innerHTML = `
-      <p class="eyebrow">Бүх үндсэн таавар тайлагдлаа</p>
-      <h2 class="hand">You explored the entire<br/>Little World</h2>
+      <p class="eyebrow">${copy.eyebrow}</p>
+      <h2 class="hand">${copy.h2}</h2>
       <div class="stats">
         <div><b>${mins}:${String(secs).padStart(2, '0')}</b><span>хугацаа</span></div>
         <div><b>${this.s.achievements.length}/${ACHIEVEMENTS.length}</b><span>амжилт</span></div>
         <div><b>${owned}/${REWARDS.length}</b><span>цуглуулга</span></div>
       </div>
-      <p class="muted">Гэхдээ энэ өрөөнд нууц амжилтууд үлдсэн байж магадгүй... Бүх зүйл дээр дарсан уу?</p>`;
+      <p class="muted">${copy.muted}</p>`;
     const actions = h('div', { class: 'actions' });
     const share = h('button', { class: 'btn-primary' });
     share.innerHTML = `${icon('camera', 18)} Амжилтын карт татах`;
@@ -1278,14 +1315,14 @@ export class Game {
     let stop: (() => void) | null = null;
     const start = () => {
       stop?.();
-      stop = runStarCatcher(cv, (win, score) => {
+      stop = runStarCatcher(cv, (win, score, timeLeft) => {
         this.bestScore = Math.max(this.bestScore, score);
         if (win) {
           sound.fanfare();
           if (this.s.stage === 2) {
             stop?.();
             ui.closeModal();
-            void this.arcadeWin(score);
+            void this.arcadeWin(score, timeLeft);
           } else {
             info.textContent = `YOU WIN! ${score} оноо. Аркад легенд хэвээрээ.`;
             showRetry();
@@ -1306,14 +1343,19 @@ export class Game {
     start();
   }
 
-  private async arcadeWin(score: number) {
+  private async arcadeWin(score: number, timeLeft: number) {
     this.s.stage = 3;
+    // Rank the win by how much of the clock was left: gold if you finished with
+    // over half the time to spare, silver over a quarter, bronze for any win at all.
+    const rank = timeLeft >= DURATION * 0.5 ? 3 : timeLeft >= DURATION * 0.25 ? 2 : 1;
+    this.s.bestArcadeRank = Math.max(this.s.bestArcadeRank, rank);
     this.save();
     this.refreshHUD();
     this.unlock('arcade');
     this.confetti(this.c.world.anchorOf('arcade'), 80, 1);
+    const rankLabel = rank === 3 ? '★★★ GOLD' : rank === 2 ? '★★ SILVER' : '★ BRONZE';
     const el = h('div', { class: 'arcade-win' });
-    el.innerHTML = `<p class="pixel">NEW HI-SCORE!</p><p class="pixel big">${score}</p><p class="pixel small">ENTER YOUR NAME:</p><div class="glyph-row">${GLYPH_ORDER.map((g) => `<span>${g}</span>`).join('')}</div><p class="hint-note">Хачин... нэрийн оронд тэмдгүүд бичигдчихлээ. Энэ дараалал хаа нэгтээ хэрэг болох байх.</p>`;
+    el.innerHTML = `<p class="pixel">NEW HI-SCORE!</p><p class="pixel big">${score}</p><p class="pixel small rank-${rank}">${rankLabel} RANK</p><p class="pixel small">ENTER YOUR NAME:</p><div class="glyph-row">${GLYPH_ORDER.map((g) => `<span>${g}</span>`).join('')}</div><p class="hint-note">Хачин... нэрийн оронд тэмдгүүд бичигдчихлээ. Энэ дараалал хаа нэгтээ хэрэг болох байх.</p>`;
     const b = h('button', { class: 'btn-primary' }, 'Санаж авлаа');
     b.addEventListener('click', () => ui.closeModal());
     el.append(b);
@@ -1379,6 +1421,10 @@ export class Game {
       wipeSave();
       location.reload();
     });
+    if (this.s.bestArcadeRank > 0) {
+      const rankLabel = ['', 'BRONZE 🥉', 'SILVER 🥈', 'GOLD 🥇'][this.s.bestArcadeRank];
+      el.append(h('p', { class: 'muted small' }, `Star Catcher-ийн шилдэг дүн: ${rankLabel}`));
+    }
     el.append(h('p', { class: 'muted small' }, 'Little World · Three.js + WebAudio · Ахиц энэ төхөөрөмж дээр хадгалагдана.'));
     ui.openModal(el, { className: 'modal-menu' });
   }
@@ -1472,8 +1518,19 @@ export class Game {
     if (!this.busy && !ui.modalOpen) {
       this.eventTimer -= dt;
       if (this.eventTimer <= 0) {
-        this.eventTimer = rand(45, 80);
-        this.randomEvent();
+        if (this.blackoutOn || this.glitchOn || this.discoOn) {
+          // Another ambient event is still mid-animation — don't stack a second
+          // one on top of it (e.g. a meteor shower firing *during* a blackout).
+          // Re-check shortly instead of burning this roll.
+          this.eventTimer = 2;
+        } else {
+          // Rarer early on, noticeably more frequent by the finale — the room
+          // should feel like it's waking up more as the mystery gets deeper.
+          const lo = Math.max(22, 45 - this.s.stage * 5);
+          const hi = Math.max(38, 80 - this.s.stage * 6);
+          this.eventTimer = rand(lo, hi);
+          this.randomEvent();
+        }
       }
       if (this.s.stage >= 1 && this.s.stage < 4 && !this.s.creatureCaught && creature.mode === 'hidden') {
         this.peekTimer -= dt;

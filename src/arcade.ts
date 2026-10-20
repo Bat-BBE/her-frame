@@ -4,10 +4,12 @@ interface Item { x: number; y: number; vy: number; kind: 'star' | 'bug' | 'gold'
 interface Spark { x: number; y: number; vx: number; vy: number; life: number; color: string }
 
 export const GOAL = 12;
-const DURATION = 22;
+export const DURATION = 22;
 
-/** Runs the Star Catcher mini-game on the given canvas. Returns a cleanup function. */
-export function runStarCatcher(canvas: HTMLCanvasElement, onEnd: (win: boolean, score: number) => void) {
+/** Runs the Star Catcher mini-game on the given canvas. Returns a cleanup function.
+ *  `onEnd`'s third argument is the seconds left on the clock when the round ended —
+ *  the caller uses it to rank a win as bronze/silver/gold. */
+export function runStarCatcher(canvas: HTMLCanvasElement, onEnd: (win: boolean, score: number, timeLeft: number) => void) {
   const W = 320, H = 420;
   canvas.width = W;
   canvas.height = H;
@@ -164,7 +166,7 @@ export function runStarCatcher(canvas: HTMLCanvasElement, onEnd: (win: boolean, 
       if (lives <= 0 || time <= 0) {
         over = true;
         const win = lives > 0 && score >= GOAL;
-        setTimeout(() => onEnd(win, score), 900);
+        setTimeout(() => onEnd(win, score, Math.max(0, time)), 900);
       }
     }
 

@@ -62,7 +62,31 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   { id: 'hacker', title: 'Hacker Voice: "I\'m in"', desc: 'Терминалд нууц команд олсон.', secret: true },
   { id: 'lucky', title: 'Suspiciously Lucky', desc: 'Домогт шагнал авлаа.', secret: true },
   { id: 'hoarder', title: 'Hoarder', desc: '10 төрлийн цуглуулга цуглууллаа.', secret: true },
+  { id: 'curator', title: 'Clicked Everything', desc: 'Өрөөн дэх бүх объект дээр дор хаяж нэг удаа дарлаа.', secret: true },
+  { id: 'curious', title: 'Too Curious', desc: 'Нийтдээ 150 удаа дарлаа. Тайвшир — энэ ердөө нэг өрөө шүү.', secret: true },
+  { id: 'speedrun', title: 'Speed Detective', desc: 'Бүх үндсэн таавраа 6 минутын дотор тайлчихлаа.', secret: true },
 ];
+
+export interface LevelDef {
+  code: string;
+  name: string;
+  tag: 'Easy' | 'Medium' | 'Timed' | 'Twist' | 'Finale';
+  reward: string;
+}
+
+/** Display metadata for the 5 user-facing "levels". Internally the game still
+ *  tracks 6 numeric stages (0-5) — stages 4 and 5 both belong to Level 05,
+ *  since the cube word-puzzle and the finale are one continuous beat. Use
+ *  `stageToLevel()` to go from a stage number to an index into this array. */
+export const LEVELS: LevelDef[] = [
+  { code: '01', name: "The Beginner's Room", tag: 'Easy', reward: 'Сэжигтэй хайрцаг нээгдэж, дотроос нэг жижиг бэлэг гарч ирлээ.' },
+  { code: '02', name: 'The Messy Detective', tag: 'Medium', reward: 'Өрөөнд шинэ дүр илэрлээ — одоо Мочиг барих ёстой боллоо.' },
+  { code: '03', name: 'The 30-Second Panic', tag: 'Timed', reward: '' },
+  { code: '04', name: 'The Room Is Lying', tag: 'Twist', reward: 'Зөв дарааллыг олж, нууц өрөөний хаалгыг нээлээ.' },
+  { code: '05', name: 'The Final Secret', tag: 'Finale', reward: 'Жижиг ертөнцийн нууц төгсгөл нээгдлээ.' },
+];
+
+export const stageToLevel = (stage: number) => Math.min(stage, LEVELS.length - 1);
 
 export const TITLE_PREFIX = ['Мэргэжлийн', 'Нууцлаг', 'Албан ёсны', 'Дэлхийд алдартай', 'Шөнийн', 'Гайхамшигт', 'Жаахан сэжигтэй', 'Хагас цагийн'];
 export const TITLE_NOUN = ['хайрцаг онгойлгогч', 'оймс цуглуулагч', 'товчлуур дарагч', 'ургамал усалгаач', 'мөрдөгч', 'од ширтэгч', 'цаг аялагч', 'чипс хамгаалагч', 'ном үнэрлэгч'];

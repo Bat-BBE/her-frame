@@ -238,10 +238,17 @@ startBtn.addEventListener('click', () => {
 });
 
 // ------------------------------------------------------------------ loop
+let resizeRaf = 0;
 addEventListener('resize', () => {
-  fit();
-  renderer.setSize(innerWidth, innerHeight);
-  composer.setSize(innerWidth, innerHeight);
+  // Mobile browsers fire a burst of resize events while the address bar
+  // slides away or the screen rotates; coalesce them to one per frame.
+  if (resizeRaf) return;
+  resizeRaf = requestAnimationFrame(() => {
+    resizeRaf = 0;
+    fit();
+    renderer.setSize(innerWidth, innerHeight);
+    composer.setSize(innerWidth, innerHeight);
+  });
 });
 
 const clock = new THREE.Clock();

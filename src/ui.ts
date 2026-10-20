@@ -1,6 +1,6 @@
 import gsap from 'gsap';
 import { h } from './util';
-import type { CardColor, Shape } from './data';
+import type { CardColor, LevelDef, Shape } from './data';
 
 export const ICONS: Record<string, string> = {
   box: '<path d="M3 8l9-5 9 5v8l-9 5-9-5z"/><path d="M3 8l9 5 9-5M12 13v8"/>',
@@ -79,8 +79,12 @@ class UI {
 
   get modalOpen() { return this.current !== null; }
 
-  setQuest(step: number, total: number, title: string, sub: string, slots: number, letters: string[]) {
+  setQuest(step: number, total: number, title: string, sub: string, slots: number, letters: string[], level?: LevelDef) {
     $('quest-step').textContent = `${Math.min(step, total)}/${total}`;
+    const lvlEl = $('quest-level');
+    lvlEl.textContent = level ? `LVL ${level.code} · ${level.tag.toUpperCase()}` : '';
+    lvlEl.title = level?.name ?? '';
+    lvlEl.dataset.tag = level?.tag.toLowerCase() ?? '';
     $('quest-title').textContent = title;
     $('quest-sub').textContent = sub;
     const tray = $('tray');
@@ -228,9 +232,14 @@ class UI {
     this.modalRoot.replaceChildren(panel);
     this.modalRoot.classList.add('open');
     gsap.fromTo(this.modalRoot, { opacity: 0 }, { opacity: 1, duration: 0.25 });
-    gsap.fromTo(panel, { y: 30, scale: 0.92, opacity: 0 }, { y: 0, scale: 1, opacity: 1, duration: 0.45, ease: 'back.out(1.8)' });
     const focusable = panel.querySelector<HTMLElement>('input, button.btn-primary');
-    focusable?.focus();
+    // Focus only once the panel has settled: focusing an <input> immediately pops the
+    // on-screen keyboard on phones, which fights the open animation and shoves the
+    // layout around mid-transition.
+    gsap.fromTo(panel, { y: 30, scale: 0.92, opacity: 0 }, {
+      y: 0, scale: 1, opacity: 1, duration: 0.45, ease: 'back.out(1.8)',
+      onComplete: () => focusable?.focus({ preventScroll: true }),
+    });
   }
 
   closeModal() {

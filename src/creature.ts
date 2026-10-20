@@ -45,6 +45,13 @@ export class Creature {
       this.body.add(mesh(new THREE.SphereGeometry(0.07, 10, 8), pink, s * 0.13, 0.04, 0.08));
     }
     this.group.add(this.body);
+    // Mochi only sprints into view for a few seconds — on a phone, tapping its actual
+    // ~0.3-unit body while it runs is nearly impossible. This invisible sphere (same
+    // trick as the tesseract's hit proxy in world.ts) gives every pointer type a much
+    // more forgiving target without changing how the creature looks.
+    const hitProxy = new THREE.Mesh(new THREE.SphereGeometry(0.55, 8, 6), new THREE.MeshBasicMaterial({ visible: false }));
+    hitProxy.position.y = 0.28;
+    this.group.add(hitProxy);
     this.group.position.copy(HIDE);
     this.group.visible = false;
     world.root.add(this.group);

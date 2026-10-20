@@ -31,6 +31,7 @@ body {
   margin: 0;
   height: 100%;
   overflow: hidden;
+  overscroll-behavior: none;
   background: var(--bg);
   color: var(--text);
   font-family: var(--body);
@@ -41,16 +42,19 @@ button {
   font: inherit;
   color: inherit;
   cursor: pointer;
+  touch-action: manipulation;
 }
 [hidden] {
   display: none !important;
 }
 
 #scene {
+  /* No explicit width/height here on purpose: 100vw/100vh is taller than the
+     visible area on mobile Safari once the address bar is accounted for, which
+     clips the bottom of the scene. `inset: 0` on a fixed element already fills
+     exactly the real visual viewport and keeps up as browser chrome shows/hides. */
   position: fixed;
   inset: 0;
-  width: 100vw;
-  height: 100vh;
   display: block;
   touch-action: none;
   outline: none;
@@ -114,7 +118,8 @@ button {
 .quest-head {
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px 10px;
 }
 .quest-step {
   font-size: 12px;
@@ -124,8 +129,39 @@ button {
   background: var(--violet);
   letter-spacing: 0.04em;
 }
+.quest-level {
+  font-size: 10.5px;
+  font-weight: 800;
+  padding: 3px 9px;
+  border-radius: 99px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--muted);
+}
+.quest-level[data-tag="easy"] {
+  background: rgba(126, 217, 87, 0.22);
+  color: var(--green);
+}
+.quest-level[data-tag="medium"] {
+  background: rgba(255, 211, 107, 0.22);
+  color: var(--gold);
+}
+.quest-level[data-tag="timed"] {
+  background: rgba(255, 126, 182, 0.22);
+  color: var(--pink);
+}
+.quest-level[data-tag="twist"] {
+  background: rgba(125, 249, 255, 0.22);
+  color: var(--cyan);
+}
+.quest-level[data-tag="finale"] {
+  background: rgba(179, 136, 255, 0.28);
+  color: var(--violet-2);
+}
 .quest h2 {
-  margin: 0;
+  margin: 6px 0 0;
+  width: 100%;
   font-size: 18px;
   font-weight: 800;
 }
@@ -486,7 +522,12 @@ button {
   position: relative;
   width: min(440px, 100%);
   max-height: calc(100vh - 32px);
+  /* dvh accounts for the on-screen keyboard on phones (100vh does not), so the
+     input in the terminal/arcade-password modals stays visible above it.
+     Browsers without dvh support just ignore this line and keep the vh value above. */
+  max-height: calc(100dvh - 32px);
   overflow: auto;
+  overscroll-behavior: contain;
   padding: 28px 26px 24px;
   border-radius: 24px;
   background: var(--panel-solid);
@@ -755,6 +796,15 @@ button {
 }
 .msg.bad {
   color: #ff6b81;
+}
+.rank-1 {
+  color: #cd7f32;
+}
+.rank-2 {
+  color: #c7d6e8;
+}
+.rank-3 {
+  color: var(--gold);
 }
 .arcade-canvas {
   width: 100%;
@@ -1151,7 +1201,7 @@ button {
 /* ---------------------------------------------------------------- responsive */
 @media (max-width: 760px) {
   .brand {
-    top: 14px;
+    top: max(14px, env(safe-area-inset-top));
     left: 16px;
   }
   .brand h1 {
@@ -1166,7 +1216,10 @@ button {
   }
   .quest {
     top: auto;
-    bottom: 96px;
+    /* Clears the toolbar's real top edge (its own safe-area offset + height)
+       plus a visible gap, instead of a fixed 96px that a tall home-indicator
+       safe area could eat into. */
+    bottom: calc(max(16px, env(safe-area-inset-bottom)) + 76px);
     left: 16px;
     right: 16px;
     width: auto;
@@ -1185,7 +1238,7 @@ button {
     font-size: 20px;
   }
   .counter {
-    top: 14px;
+    top: max(14px, env(safe-area-inset-top));
     right: 16px;
     padding: 8px 12px;
   }
@@ -1209,7 +1262,7 @@ button {
     width: min(300px, calc(100vw - 32px));
   }
   .ach-stack {
-    top: 80px;
+    top: calc(max(14px, env(safe-area-inset-top)) + 66px);
     right: 16px;
     left: 16px;
     align-items: center;
@@ -1219,7 +1272,7 @@ button {
     max-width: 360px;
   }
   .toasts {
-    top: 80px;
+    top: calc(max(14px, env(safe-area-inset-top)) + 66px);
   }
   .hand {
     font-size: 34px;

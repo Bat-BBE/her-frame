@@ -12,6 +12,9 @@ export interface SaveData {
   playMs: number;
   finishedMs?: number;
   noteDismissed: boolean;
+  totalClicks: number;
+  /** Best Star Catcher result: 0 = none yet, 1 = bronze, 2 = silver, 3 = gold. */
+  bestArcadeRank: number;
 }
 
 const KEY = 'little-world-save-v1';
@@ -29,6 +32,8 @@ const fresh = (): SaveData => ({
   muted: false,
   playMs: 0,
   noteDismissed: false,
+  totalClicks: 0,
+  bestArcadeRank: 0,
 });
 
 export function loadSave(): SaveData {
