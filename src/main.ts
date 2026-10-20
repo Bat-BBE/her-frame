@@ -49,7 +49,11 @@ scene.environmentIntensity = 0.25;
 
 const camera = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.1, 1000);
 const controls = new OrbitControls(camera, canvas);
-const TARGET = new THREE.Vector3(-0.2, 1.3, -0.2);
+const BASE_TARGET = new THREE.Vector3(-0.2, 1.3, -0.2);
+// Moves toward the new deck as the room grows, so the whole (bigger) room stays centered.
+const TARGET = BASE_TARGET.clone();
+/** Multiplier on every framing distance; > 1 once the room has grown. */
+let roomScale = 1;
 controls.target.copy(TARGET);
 controls.enableDamping = true;
 controls.dampingFactor = 0.07;
@@ -69,9 +73,17 @@ function fit() {
   camera.updateProjectionMatrix();
   const v = THREE.MathUtils.degToRad(camera.fov / 2);
   const hh = Math.atan(Math.tan(v) * aspect);
-  homeDist = Math.max(6.7 / Math.tan(v), 7.8 / Math.tan(hh));
+  homeDist = Math.max(6.7 / Math.tan(v), 7.8 / Math.tan(hh)) * roomScale;
   controls.minDistance = homeDist * 0.42;
-  controls.maxDistance = homeDist * 1.4;
+  // On a narrow phone screen the horizontal field of view (hh) is much tighter
+  // than on a desktop window, even after widening fov above — so `homeDist * 1.4`
+  // alone leaves some room corners outside the frame no matter how far you zoom
+  // out or rotate. Guarantee the same absolute half-width/half-height coverage
+  // at max zoom-out that a typical desktop window already gets (reverse-engineered
+  // from the pre-existing 16:9-at-fov-30 case), on top of the old multiplier —
+  // this is a no-op on desktop aspects and only pushes narrow/mobile aspects out.
+  const farDist = Math.max(9.4 / Math.tan(v), 16.7 / Math.tan(hh)) * roomScale;
+  controls.maxDistance = Math.max(homeDist * 1.4, farDist);
 }
 fit();
 const homeView = () => {
@@ -83,7 +95,10 @@ camera.lookAt(TARGET);
 
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
-const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.6, 0.55, 0.82);
+// Strength/threshold tuned down from the original 0.6/0.82: at the old values bright
+// surfaces (the lamp, the moon) blew out to flat white blobs with no shape or color
+// left — this keeps a cozy glow on real highlights without erasing their detail.
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.46, 0.5, 0.88);
 composer.addPass(bloom);
 const rgbShift = new ShaderPass(RGBShiftShader);
 rgbShift.uniforms.amount.value = 0;
@@ -98,8 +113,31 @@ const world = new World(scene);
 const sky = new Sky(scene);
 sky.camera = camera;
 const creature = new Creature(world);
+
+/** Grows the room to `levels` extended levels and reframes the camera around it.
+ *  `animate` glides the camera to the new home view (used on level-up). */
+function setGrowth(levels: number, animate: boolean) {
+  world.setGrowth(levels);
+  const w = world.growth;
+  roomScale = 1 + (w / 10.3) * 0.8;
+  TARGET.copy(BASE_TARGET).add(new THREE.Vector3(w * 0.45, 0, w * 0.45));
+  fit();
+  if (!animate) {
+    controls.target.copy(TARGET);
+    return;
+  }
+  const v = homeView();
+  controls.enabled = false;
+  gsap.to(controls.target, { x: TARGET.x, y: TARGET.y, z: TARGET.z, duration: 2.4, ease: 'power2.inOut' });
+  gsap.to(camera.position, {
+    x: v.pos.x, y: v.pos.y, z: v.pos.z, duration: 2.4, ease: 'power2.inOut',
+    onUpdate: () => camera.lookAt(controls.target),
+    onComplete: () => { controls.enabled = true; },
+  });
+}
+
 const game = new Game({
-  world, sky, creature, camera, controls, rgbShift, homeView,
+  world, sky, creature, camera, controls, rgbShift, homeView, setGrowth,
   snapshot: () => {
     composer.render();
     return renderer.domElement.toDataURL('image/png');
@@ -232,6 +270,10 @@ startBtn.addEventListener('click', () => {
       started = true;
       if (game.s.stage === 0 && game.s.seen.length === 0) {
         setTimeout(() => ui.toast('Өрөөнд 4 үсэг нуугдсан байна. Гэрэлтэж буй цэгүүд дээр дараад үз!', 5500), 600);
+      } else {
+        // Brand-new players get the toast above instead — the daily reward is
+        // for people who've already been here before.
+        game.checkDailyReward();
       }
     },
   });

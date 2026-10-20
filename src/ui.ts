@@ -79,8 +79,11 @@ class UI {
 
   get modalOpen() { return this.current !== null; }
 
-  setQuest(step: number, total: number, title: string, sub: string, slots: number, letters: string[], level?: LevelDef) {
-    $('quest-step').textContent = `${Math.min(step, total)}/${total}`;
+  setQuest(step: number, total: number, title: string, sub: string, slots: number, letters: string[], level?: LevelDef, done = false) {
+    const stepEl = $('quest-step');
+    stepEl.textContent = done ? '✓ ДУУССАН' : `${Math.min(step, total)}/${total}`;
+    stepEl.classList.toggle('done', done);
+    $('quest').classList.toggle('done', done);
     const lvlEl = $('quest-level');
     lvlEl.textContent = level ? `LVL ${level.code} · ${level.tag.toUpperCase()}` : '';
     lvlEl.title = level?.name ?? '';
@@ -90,6 +93,7 @@ class UI {
     const tray = $('tray');
     tray.replaceChildren();
     tray.hidden = slots === 0;
+    tray.classList.toggle('many', slots > 6);
     const prev = title === this.lastQuest ? this.lastFilled : 0;
     for (let i = 0; i < slots; i++) {
       const s = h('span', { class: 'slot' + (letters[i] ? ' filled' : '') + (letters[i] && i >= prev ? ' pop' : '') }, letters[i] ?? '');

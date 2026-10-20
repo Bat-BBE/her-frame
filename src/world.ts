@@ -2,10 +2,34 @@ import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { canvasTex, std, glow, mesh, hash3, rand, drawGlyph, letterTexture } from './util';
 import { Tesseract } from './sky';
-import { GLYPH_WALL } from './data';
+import { GLYPH_WALL, EXT_LEVELS, propStart } from './data';
+
+export type PropType = 'lantern' | 'crate' | 'crystal' | 'statue' | 'chest' | 'orb' | 'tree';
+const PROP_TYPES: PropType[] = ['lantern', 'crate', 'crystal', 'statue', 'chest', 'orb', 'tree'];
+const PROP_COLS = ['#ff7eb6', '#7df9ff', '#ffd36b', '#b388ff', '#7ed957', '#ff9a5c'];
+/** World units the deck grows outward per extended level. */
+export const GROW_STEP = 1.25;
 
 const WALL_H = 5;
 const RAIL_Y = 1.4;
+
+export type ThemeName = 'default' | 'mint' | 'sunset' | 'galaxy';
+
+export interface ThemeDef {
+  label: string;
+  wall: string;
+  wallLow: string;
+  neon: string;
+  /** Number of unique collected reward types needed to unlock this theme (REWARDS.length = 13). */
+  unlockAt: number;
+}
+
+export const ROOM_THEMES: Record<ThemeName, ThemeDef> = {
+  default: { label: 'Анхдагч (Violet)', wall: '#4d3c83', wallLow: '#3a2d68', neon: '#5ab8ff', unlockAt: 0 },
+  mint: { label: 'Mint', wall: '#2f6b5e', wallLow: '#234f46', neon: '#7df9ff', unlockAt: 4 },
+  sunset: { label: 'Sunset', wall: '#7a3a4d', wallLow: '#5c2a3a', neon: '#ff9a5c', unlockAt: 8 },
+  galaxy: { label: 'Galaxy', wall: '#2a1f55', wallLow: '#1c1540', neon: '#b388ff', unlockAt: 13 },
+};
 
 export interface LightSet {
   hemi: THREE.HemisphereLight;
@@ -63,6 +87,18 @@ export class World {
   alcove!: THREE.Group;
   windowGroup!: THREE.Group;
   rocks: THREE.Mesh[] = [];
+  private flames: THREE.Mesh[] = [];
+  private floorTop!: THREE.MeshStandardMaterial;
+  private floorSide!: THREE.MeshStandardMaterial;
+  private floorTex!: THREE.Texture;
+  private annex = new THREE.Group();
+  private annexDisposables: { dispose(): void }[] = [];
+  private spinners: THREE.Object3D[] = [];
+  /** Extra deck width (world units) beyond the original 10.3×10.3 floor. */
+  growth = 0;
+  private growthLevels = 0;
+  /** prop id → type, for every object that appeared through room growth. */
+  readonly propTypes = new Map<string, PropType>();
   trophyRing = new THREE.Group();
   private dust!: THREE.Points;
   private dustMat!: THREE.ShaderMaterial;
@@ -104,6 +140,7 @@ export class World {
     this.buildDust();
     this.buildLights();
     this.root.add(this.trophyRing);
+    this.root.add(this.annex);
   }
 
   register(id: string, obj: THREE.Object3D, anchor: THREE.Vector3, hotspot = true) {
@@ -172,6 +209,9 @@ export class World {
     });
     const top = std('#ffffff', { map: plank.tex, roughness: 0.62 });
     const side = std('#5a3624');
+    this.floorTop = top;
+    this.floorSide = side;
+    this.floorTex = plank.tex;
     const floor = new THREE.Mesh(new THREE.BoxGeometry(10.3, 0.5, 10.3), [side, side, top, side, side, side]);
     floor.position.set(-0.15, -0.25, -0.15);
     floor.receiveShadow = true;
@@ -766,7 +806,10 @@ export class World {
     inner.scale.set(1, 0.55, 1);
     g.add(inner);
     const pillow = mesh(new RoundedBoxGeometry(0.55, 0.18, 0.45, 3, 0.08), std('#7cc6c0', { roughness: 0.95 }), 0.1, 0.82, -0.15);
-    pillow.rotation.set(0.3, 0.4, 0.1);
+    // Was rotated (0.3, 0.4, 0.1) — from the default camera angle that presented the
+    // thin 0.18-tall face edge-on, so the pillow read as a flat blue wedge instead of
+    // a soft cushion. A gentler tilt keeps the casual "tossed there" look without that.
+    pillow.rotation.set(0.12, 0.15, 0.08);
     g.add(pillow);
     this.beanbagInner = inner;
     this.root.add(g);
@@ -814,8 +857,8 @@ export class World {
     side.add(mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.18, 12), std('#fff4e0'), 0, 0.67, 0));
     const flame = mesh(new THREE.SphereGeometry(0.035, 8, 6), glow('#ffb347', 5), 0, 0.8, 0);
     flame.scale.y = 1.8;
-    flame.userData.flame = true;
     side.add(flame);
+    this.flames.push(flame);
     this.root.add(side);
   }
 
@@ -937,6 +980,148 @@ export class World {
 
   setDustColor(c: THREE.ColorRepresentation) { (this.dustMat.uniforms.uColor.value as THREE.Color).set(c); }
 
+  /** Repaints the walls and neon cloud to a theme preset. `this.mats.wall`/`wallLow`
+   *  are shared by every wall segment (they were passed by reference in wallBox()),
+   *  so mutating the two material instances here repaints the whole room at once —
+   *  no need to touch individual meshes. */
+  setTheme(name: ThemeName) {
+    const t = ROOM_THEMES[name];
+    this.mats.wall.color.set(t.wall);
+    this.mats.wallLow.color.set(t.wallLow);
+    this.neonMat.emissive.set(t.neon);
+    this.lights.neon.color.set(t.neon);
+  }
+
+  // ---------------------------------------------------------------- room growth
+  /** `levels` = how many extended levels are unlocked (0..7). Each one widens the
+   *  L-shaped deck along the room's two open sides by GROW_STEP and adds that
+   *  level's new objects on the freshly built strip. Idempotent. */
+  setGrowth(levels: number) {
+    levels = Math.max(0, Math.min(levels, EXT_LEVELS.length));
+    for (let k = 0; k < levels; k++) this.ensureLevelProps(k);
+    if (levels === this.growthLevels) return;
+    this.growthLevels = levels;
+    this.growth = levels * GROW_STEP;
+    this.rebuildAnnex();
+    const b = 9 + this.growth;
+    const cam = this.lights.key.shadow.camera;
+    cam.left = -b;
+    cam.right = b;
+    cam.top = b;
+    cam.bottom = -b;
+    cam.updateProjectionMatrix();
+  }
+
+  private rebuildAnnex() {
+    for (const c of [...this.annex.children]) this.annex.remove(c);
+    for (const d of this.annexDisposables) d.dispose();
+    this.annexDisposables = [];
+    const w = this.growth;
+    if (w <= 0) return;
+    const deck = (x0: number, x1: number, z0: number, z1: number) => {
+      const sx = x1 - x0, sz = z1 - z0;
+      const tex = this.floorTex.clone();
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      tex.repeat.set(sx / 10.3, sz / 10.3);
+      tex.needsUpdate = true;
+      const top = this.floorTop.clone();
+      top.map = tex;
+      const geo = new THREE.BoxGeometry(sx, 0.5, sz);
+      const m = new THREE.Mesh(geo, [this.floorSide, this.floorSide, top, this.floorSide, this.floorSide, this.floorSide]);
+      m.position.set((x0 + x1) / 2, -0.25, (z0 + z1) / 2);
+      m.receiveShadow = true;
+      this.annex.add(m);
+      const trimGeo = new THREE.BoxGeometry(sx + 0.2, 0.14, sz + 0.2);
+      this.annex.add(mesh(trimGeo, this.mats.trim, (x0 + x1) / 2, -0.52, (z0 + z1) / 2));
+      this.annexDisposables.push(tex, top, geo, trimGeo);
+    };
+    deck(-5.3, 5.0 + w, 5.0, 5.0 + w);
+    deck(5.0, 5.0 + w, -5.3, 5.0);
+  }
+
+  /** Props for extended level k sit on that level's own strip of deck, spread
+   *  along the L-shaped path — positions are deterministic so reloads match. */
+  private ensureLevelProps(k: number) {
+    const n = EXT_LEVELS[k].props;
+    const start = propStart(k);
+    const d = 5.0 + (k + 0.5) * GROW_STEP;
+    const legLen = d + 4.0;
+    const total = legLen * 2;
+    for (let j = 0; j < n; j++) {
+      const idx = start + j;
+      const id = `prop${idx}`;
+      if (this.interactives.has(id)) continue;
+      const s = (total * (j + 0.5 + (k % 2) * 0.3)) / n % total;
+      const x = s < legLen ? -4.0 + s : d;
+      const z = s < legLen ? d : d - (s - legLen);
+      const type = PROP_TYPES[idx % PROP_TYPES.length];
+      const { g, anchorY } = this.buildProp(type, idx);
+      g.position.set(x, 0, z);
+      g.rotation.y = idx * 1.7;
+      this.root.add(g);
+      this.propTypes.set(id, type);
+      this.register(id, g, new THREE.Vector3(0, anchorY, 0));
+    }
+  }
+
+  private buildProp(type: PropType, idx: number): { g: THREE.Group; anchorY: number } {
+    const g = new THREE.Group();
+    const col = PROP_COLS[idx % PROP_COLS.length];
+    const wood = this.mats.wood, dark = this.mats.darkWood, gold = this.mats.gold;
+    switch (type) {
+      case 'lantern': {
+        g.add(mesh(new THREE.CylinderGeometry(0.22, 0.28, 0.12, 12), this.mats.frame, 0, 0.06, 0));
+        g.add(mesh(new THREE.CylinderGeometry(0.035, 0.035, 1.4, 8), gold, 0, 0.8, 0));
+        g.add(mesh(new THREE.SphereGeometry(0.18, 16, 12), glow(col, 2.4), 0, 1.6, 0));
+        g.add(mesh(new THREE.ConeGeometry(0.2, 0.16, 12), this.mats.frame, 0, 1.84, 0));
+        return { g, anchorY: 2.0 };
+      }
+      case 'crate': {
+        g.add(mesh(new RoundedBoxGeometry(0.75, 0.75, 0.75, 2, 0.05), wood, 0, 0.375, 0));
+        for (const y of [0.15, 0.6]) g.add(mesh(new THREE.BoxGeometry(0.78, 0.07, 0.78), dark, 0, y, 0));
+        g.add(mesh(new THREE.BoxGeometry(0.2, 0.2, 0.02), glow(col, 1.4), 0, 0.4, 0.39));
+        return { g, anchorY: 0.95 };
+      }
+      case 'crystal': {
+        g.add(mesh(new THREE.DodecahedronGeometry(0.32, 0), this.mats.rock, 0, 0.2, 0));
+        const c = mesh(new THREE.OctahedronGeometry(0.26, 0), glow(col, 2), 0, 0.85, 0);
+        c.scale.y = 2;
+        g.add(c);
+        this.spinners.push(c);
+        return { g, anchorY: 1.5 };
+      }
+      case 'statue': {
+        g.add(mesh(new THREE.BoxGeometry(0.6, 0.5, 0.6), std('#4a3d78', { roughness: 0.8 }), 0, 0.25, 0));
+        const knot = mesh(new THREE.TorusKnotGeometry(0.2, 0.07, 64, 8), std(col, { metalness: 0.6, roughness: 0.3 }), 0, 0.95, 0);
+        g.add(knot);
+        this.spinners.push(knot);
+        return { g, anchorY: 1.45 };
+      }
+      case 'chest': {
+        g.add(mesh(new THREE.BoxGeometry(0.85, 0.45, 0.55), dark, 0, 0.225, 0));
+        const lid = mesh(new THREE.CylinderGeometry(0.275, 0.275, 0.85, 16, 1, false, 0, Math.PI), dark, 0, 0.45, 0);
+        lid.rotation.z = Math.PI / 2;
+        g.add(lid);
+        g.add(mesh(new THREE.BoxGeometry(0.1, 0.5, 0.57), gold, 0, 0.32, 0));
+        g.add(mesh(new THREE.BoxGeometry(0.12, 0.12, 0.04), glow(col, 1.6), 0, 0.32, 0.29));
+        return { g, anchorY: 1.0 };
+      }
+      case 'orb': {
+        g.add(mesh(new THREE.CylinderGeometry(0.2, 0.3, 0.8, 12), std('#3b2f62', { roughness: 0.7 }), 0, 0.4, 0));
+        g.add(mesh(new THREE.TorusGeometry(0.24, 0.03, 8, 24).rotateX(Math.PI / 2), gold, 0, 0.82, 0));
+        g.add(mesh(new THREE.SphereGeometry(0.24, 24, 16), new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 0.6, metalness: 0.7, roughness: 0.15 }), 0, 1.08, 0));
+        return { g, anchorY: 1.5 };
+      }
+      case 'tree': {
+        g.add(mesh(new THREE.CylinderGeometry(0.08, 0.12, 0.9, 8), dark, 0, 0.45, 0));
+        g.add(mesh(new THREE.SphereGeometry(0.42, 12, 10), std('#4caf7a'), 0, 1.05, 0));
+        g.add(mesh(new THREE.SphereGeometry(0.28, 12, 10), std('#5cbf7d'), 0.18, 1.35, 0.1));
+        g.add(mesh(new THREE.SphereGeometry(0.07, 8, 6), glow(col, 2), -0.2, 1.2, 0.3));
+        return { g, anchorY: 1.75 };
+      }
+    }
+  }
+
   // ---------------------------------------------------------------- lights
   private buildLights() {
     const hemi = new THREE.HemisphereLight('#9a8cf0', '#3a2238', 1.25);
@@ -976,14 +1161,22 @@ export class World {
 
   update(dt: number, t: number) {
     this.dustMat.uniforms.uTime.value = t;
+    // Orbiting rocks are pushed outward as the deck grows so they never clip through it.
+    const gr = 1 + this.growth / 7;
     for (const r of this.rocks) {
       const o = r.userData.orbit;
       o.a += dt * o.s;
-      r.position.set(Math.cos(o.a) * o.r, o.y + Math.sin(t * 0.6 + o.a * 3) * 0.4, Math.sin(o.a) * o.r);
+      r.position.set(Math.cos(o.a) * o.r * gr, o.y + Math.sin(t * 0.6 + o.a * 3) * 0.4, Math.sin(o.a) * o.r * gr);
       r.rotation.x += dt * 0.2;
       r.rotation.y += dt * 0.15;
     }
     this.tesseract.update(dt);
+    for (const s of this.spinners) s.rotation.y += dt * 0.8;
+    for (const f of this.flames) {
+      const k = 1 + Math.sin(t * 11 + f.position.x) * 0.18 + (Math.random() - 0.5) * 0.12;
+      f.scale.set(k, 1.8 * k, k);
+      (f.material as THREE.MeshStandardMaterial).emissiveIntensity = 4.6 + Math.sin(t * 17) * 1.1 + Math.random() * 0.4;
+    }
     for (let i = 0; i < this.cubes.length; i++) {
       const c = this.cubes[i];
       if (c.userData.placed || !c.visible) continue;

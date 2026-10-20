@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import gsap from 'gsap';
 import type { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import type { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-import { World } from './world';
+import { World, ROOM_THEMES, type ThemeName } from './world';
 import { Sky } from './sky';
 import { Creature } from './creature';
 import { sound } from './audio';
@@ -11,8 +11,11 @@ import { runStarCatcher, GOAL, DURATION } from './arcade';
 import { loadSave, writeSave, wipeSave, type SaveData } from './state';
 import {
   ACHIEVEMENTS, REWARDS, RARITY_LABEL, TITLE_PREFIX, TITLE_NOUN, WORDS, LETTER_SOURCES,
-  GLYPH_ORDER, GLYPH_WALL, QUESTS, HINTS, OBJECTS, LEVELS, stageToLevel, type Rarity, type RewardDef,
+  GLYPH_ORDER, GLYPH_WALL, QUESTS, HINTS, OBJECTS, LEVELS, stageToLevel, SECRET_CLUES,
+  EXT_LEVELS, EXT_START, FINAL_STAGE, propStart, isExtStage, PLANT_RIDDLE,
+  type Rarity, type RewardDef,
 } from './data';
+import { runChallenge, pickKind } from './challenges';
 import { h, pick, rand, letterTexture, drawGlyph, sleep } from './util';
 
 export interface Ctx {
@@ -24,6 +27,32 @@ export interface Ctx {
   rgbShift: ShaderPass;
   snapshot: () => string;
   homeView: () => { pos: THREE.Vector3; target: THREE.Vector3 };
+  /** Grow the room to `levels` unlocked extended levels and reframe the camera. */
+  setGrowth: (levels: number, animate: boolean) => void;
+}
+
+/** Story objects that can also hide extended-level letters (no hint marker on these). */
+const EXT_BASE_SOURCES = ['box', 'bookshelf', 'redbook', 'plant', 'clock', 'lamp', 'rug', 'window', 'beanbag', 'poster', 'neon', 'mug', 'tesseract'];
+
+/** Small deterministic PRNG so a level's letter placement is stable across reloads. */
+function seeded(seed: number) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function seededShuffle<T>(arr: T[], rnd: () => number) {
+  const r = arr.slice();
+  for (let i = r.length - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    [r[i], r[j]] = [r[j], r[i]];
+  }
+  return r;
 }
 
 interface Particle {
@@ -62,11 +91,20 @@ export class Game {
   cardAnchor: string | null = null;
   private t = 0;
   private bestScore = 0;
+  /** object id → performance.now() until which a failed challenge keeps it locked. */
+  private lockedUntil: Record<string, number> = {};
+  /** Objects whose challenge was failed at least once this level (for Riddle Master's "first try"). */
+  private failedSources = new Set<string>();
+  /** End time of the current random meteor-shower event (Stargazer is timing, not clicking). */
+  private meteorEventUntil = 0;
+  private srcCache: { stage: number; map: Record<string, number> } | null = null;
 
   constructor(private c: Ctx) {
     c.creature.onEscaped = () => {
       if (this.s.stage >= 1 && !this.s.creatureCaught) ui.toast('Мочи дахиад нуугдчихлаа... Улаан номыг санаарай.');
     };
+    // Drop achievements that no longer exist (the old "click it N times" ones).
+    this.s.achievements = this.s.achievements.filter((id) => ACHIEVEMENTS.some((a) => a.id === id));
     this.applyState();
     this.refreshHUD();
   }
@@ -81,6 +119,7 @@ export class Game {
 
   private applyState() {
     const { world, creature } = this.c;
+    world.setTheme(this.validTheme(this.s.roomTheme));
     for (const id of this.s.seen) {
       const hs = world.hotspots.get(id);
       if (hs) hs.visible = false;
@@ -93,6 +132,7 @@ export class Game {
     if (this.s.stage >= 4) {
       world.bookshelf.position.z = -1.8 + 2.6;
       world.lights.alcove.intensity = 9;
+      world.lightBase.set(world.lights.alcove, 9);
       for (const cube of world.cubes) cube.visible = true;
     }
     if (this.s.stage >= 5) {
@@ -100,25 +140,286 @@ export class Game {
       this.finaleAmbience(true);
     }
     if (this.s.creatureCaught) creature.sit(true);
+    // Story finished (finale seen) on an older build — move straight into Level 06.
+    if (this.s.stage === 5 && this.s.finishedMs !== undefined) this.enterExtStage(EXT_START);
+    if (this.s.stage >= EXT_START) {
+      this.c.setGrowth(Math.min(this.s.stage, FINAL_STAGE - 1) - EXT_START + 1, false);
+      // Letters from an older save layout may not match this level's sources.
+      const src = this.extSources();
+      this.s.letters = this.s.letters.filter((id) => id in src);
+    }
+    this.syncPropHotspots();
     sound.setMuted(this.s.muted);
     this.syncSoundButton();
     if (this.s.noteDismissed) document.getElementById('sticky')?.remove();
   }
 
   refreshHUD() {
-    const st = Math.min(this.s.stage, QUESTS.length - 1);
-    const q = QUESTS[st];
-    const lvl = LEVELS[stageToLevel(this.s.stage)];
-    const map = LETTER_SOURCES[this.s.stage];
-    const word = st < 2 ? WORDS[st] : st === 4 ? WORDS[2] : '';
-    const letters = map ? this.s.letters.map((id) => map[id]) : st === 4 ? WORDS[2].slice(0, this.cubeIdx).split('') : [];
-    ui.setQuest(st + 1, QUESTS.length, q.title, q.sub, word.length, letters, lvl);
+    const lvlIdx = stageToLevel(this.s.stage);
+    const lvl = LEVELS[lvlIdx];
+    const done = this.s.stage >= FINAL_STAGE;
+    let title: string, sub: string, slots = 0, letters: string[] = [];
+    if (this.s.stage < EXT_START) {
+      const st = this.s.stage;
+      const q = QUESTS[st];
+      title = q.title;
+      sub = q.sub;
+      const map = LETTER_SOURCES[st];
+      const word = st < 2 ? WORDS[st] : st === 4 ? WORDS[2] : '';
+      slots = word.length;
+      letters = map ? this.s.letters.map((id) => map[id]) : st === 4 ? WORDS[2].slice(0, this.cubeIdx).split('') : [];
+    } else if (!done) {
+      const ext = EXT_LEVELS[this.s.stage - EXT_START];
+      title = ext.title;
+      sub = `Сэжүүр: «${ext.clue}» — англи үг, ${ext.word.length} үсэг. Үсгүүд холилдож гарна.`;
+      slots = ext.word.length;
+      letters = this.foundLetters();
+    } else {
+      title = 'Little World Master';
+      sub = 'Бүх 12 түвшнийг давлаа! Нууц амжилтуудаа бүгдийг нь олсон уу?';
+    }
+    ui.setQuest(lvlIdx + 1, LEVELS.length, title, sub, slots, letters, lvl, done);
     ui.setCounter(this.s.achievements.length, ACHIEVEMENTS.length);
+  }
+
+  // ------------------------------------------------------------------ extended levels
+  private nowPlayMs() {
+    return this.s.playMs + (performance.now() - this.playStart);
+  }
+
+  /** For the current extended level: object id → index of the letter it hides.
+   *  This level's brand-new objects come first, then older new objects, then
+   *  story objects (which get no hint marker) — so later words reach further
+   *  into the room. Deterministic per level so reloads keep the same layout. */
+  private extSources(): Record<string, number> {
+    if (!isExtStage(this.s.stage)) return {};
+    if (this.srcCache?.stage === this.s.stage) return this.srcCache.map;
+    const k = this.s.stage - EXT_START;
+    const rnd = seeded((k + 1) * 9973);
+    const ids = (a: number, b: number) => Array.from({ length: b - a }, (_, i) => `prop${a + i}`);
+    const newest = ids(propStart(k), propStart(k + 1));
+    const older = ids(0, propStart(k));
+    const order = [...seededShuffle(newest, rnd), ...seededShuffle(older, rnd), ...seededShuffle(EXT_BASE_SOURCES, rnd)];
+    const map: Record<string, number> = {};
+    order.slice(0, EXT_LEVELS[k].word.length).forEach((id, i) => { map[id] = i; });
+    this.srcCache = { stage: this.s.stage, map };
+    return map;
+  }
+
+  private foundLetters() {
+    if (!isExtStage(this.s.stage)) return [];
+    const word = EXT_LEVELS[this.s.stage - EXT_START].word;
+    const src = this.extSources();
+    return this.s.letters.map((id) => word[src[id]]);
+  }
+
+  /** Only the new objects that still hide a letter this level get the glowing marker. */
+  private syncPropHotspots() {
+    const { world } = this.c;
+    const src = this.extSources();
+    for (const id of world.propTypes.keys()) {
+      const hs = world.hotspots.get(id);
+      if (hs) hs.visible = id in src && !this.s.letters.includes(id);
+    }
+  }
+
+  private enterExtStage(stage: number) {
+    this.s.stage = stage;
+    this.s.letters = [];
+    this.s.levelMistakes = 0;
+    this.s.levelStartMs = this.nowPlayMs();
+    this.lockedUntil = {};
+    this.failedSources.clear();
+    this.srcCache = null;
+    this.save();
+  }
+
+  /** Called once the story finale modal is dismissed: the room grows and Level 06 begins. */
+  private beginExtLevels() {
+    if (this.s.stage !== 5) return;
+    this.enterExtStage(EXT_START);
+    this.c.setGrowth(1, true);
+    this.syncPropHotspots();
+    this.refreshHUD();
+    sound.powerUp();
+    setTimeout(() => {
+      ui.toast(`Өрөө томорлоо! ${EXT_LEVELS[0].props} шинэ объект гарч ирлээ — Түвшин 06 эхэллээ.`, 6000);
+    }, 1200);
+  }
+
+  private async tryChallenge(id: string) {
+    const left = (this.lockedUntil[id] ?? 0) - performance.now();
+    if (left > 0) {
+      sound.lock();
+      this.card(id, `Түгжигдсэн байна... ${Math.ceil(left / 1000)} секундын дараа дахин оролд.`);
+      return;
+    }
+    const k = this.s.stage - EXT_START;
+    ui.hideCard();
+    this.busy = true;
+    const res = await runChallenge({ kind: pickKind(k), level: k, hard: this.s.hardMode, title: this.nameOf(id) });
+    this.busy = false;
+    if (res.ok) {
+      if (res.kind === 'riddle' && !this.failedSources.has(id)) {
+        this.s.riddleWins++;
+        if (this.s.riddleWins >= 8) this.unlock('riddler');
+      }
+      if (res.kind === 'math') {
+        this.s.mathWins++;
+        if (this.s.mathWins >= 6) this.unlock('mathwiz');
+      }
+      if (res.kind === 'memory' && res.size >= 7) this.unlock('memory');
+      this.card(id, 'Зөв! Нуугдсан үсэг ил гарлаа.', 3500);
+      await this.revealLetter(id);
+      this.syncPropHotspots();
+    } else {
+      const sec = 5 + k * 2 + (this.s.hardMode ? 3 : 0);
+      this.lockedUntil[id] = performance.now() + sec * 1000;
+      this.failedSources.add(id);
+      this.s.levelMistakes++;
+      this.save();
+      this.card(id, `Буруу! Энэ объект ${sec} секунд түгжигдлээ. Энэ түвшний алдаа: ${this.s.levelMistakes}`, 4500);
+      this.syncPropHotspots();
+    }
+  }
+
+  private async solveExtLevel() {
+    const k = this.s.stage - EXT_START;
+    const ext = EXT_LEVELS[k];
+    const levelNo = this.s.stage;
+    const elapsed = this.nowPlayMs() - this.s.levelStartMs;
+    const mistakes = this.s.levelMistakes;
+    this.busy = true;
+    ui.flash('#ffffff', 0.7);
+    this.rgbGlitch(0.012, 1.2);
+    sound.fanfare();
+    this.confetti(this.c.world.anchorOf('computer'), 120, 1.2);
+    if (mistakes === 0) this.unlock('flawless');
+    if (mistakes >= 3) this.unlock('comeback');
+    if (elapsed < 120000) this.unlock('blitz');
+    this.enterExtStage(this.s.stage + 1);
+    const last = this.s.stage >= FINAL_STAGE;
+    if (this.s.stage === 8) this.unlock('deep');
+    if (last) this.unlock('master');
+    this.refreshHUD();
+    this.syncPropHotspots();
+    this.busy = false;
+
+    const mins = Math.floor(elapsed / 60000);
+    const secs = Math.floor((elapsed % 60000) / 1000);
+    const stars = mistakes === 0 ? '★★★' : mistakes <= 2 ? '★★☆' : '★☆☆';
+    const next = last ? null : EXT_LEVELS[k + 1];
+    const el = h('div', { class: 'finale' });
+    el.innerHTML = `
+      <p class="eyebrow">Түвшин ${String(levelNo).padStart(2, '0')} давлаа</p>
+      <h2 class="hand">${ext.word}</h2>
+      <div class="stats">
+        <div><b>${mins}:${String(secs).padStart(2, '0')}</b><span>хугацаа</span></div>
+        <div><b>${mistakes}</b><span>алдаа</span></div>
+        <div><b>${stars}</b><span>үнэлгээ</span></div>
+      </div>
+      <p class="muted">${next
+        ? `Дараагийнх: Түвшин ${String(levelNo + 1).padStart(2, '0')} — ${next.title}. Өрөө томорч ${next.props} шинэ объект гарч ирнэ. Үг ${next.word.length} үсэгтэй, сорилтууд улам хэцүү.`
+        : 'Чи Little World-ийн бүх 12 түвшнийг давлаа. Жинхэнэ мастер!'}</p>`;
+    const b = h('button', { class: 'btn-primary' }, next ? 'Дараагийн түвшин' : 'Гайхалтай!');
+    b.addEventListener('click', () => ui.closeModal());
+    el.append(b);
+    ui.openModal(el, {
+      className: 'modal-finale',
+      onClose: () => {
+        if (next) {
+          this.c.setGrowth(this.s.stage - EXT_START + 1, true);
+          this.syncPropHotspots();
+          sound.powerUp();
+          setTimeout(() => this.rollReward({ reason: `Түвшин ${String(levelNo).padStart(2, '0')}-г давсны шагнал` }), 2600);
+        } else {
+          setTimeout(() => this.rollReward({ id: 'hourglass', reason: 'Бүх 12 түвшнийг давсны шагнал' }), 800);
+        }
+      },
+    });
+  }
+
+  private baseOf(id: string) {
+    if (id.startsWith('glyph')) return 'glyph';
+    if (id.startsWith('cube')) return 'cube';
+    if (id.startsWith('prop')) return this.c.world.propTypes.get(id) ?? 'crate';
+    return id;
+  }
+
+  private nameOf(id: string) {
+    return OBJECTS[this.baseOf(id)]?.name ?? id;
+  }
+
+  private onProp(id: string) {
+    const type = this.c.world.propTypes.get(id) ?? 'crate';
+    const obj = this.c.world.interactives.get(id);
+    if (obj) gsap.fromTo(obj.rotation, { z: 0.08 }, { z: 0, duration: 0.6, ease: 'elastic.out(1.2, 0.3)' });
+    sound.pop();
+    if (this.s.letters.includes(id)) {
+      this.card(id, 'Энэ объектын нууцыг чи аль хэдийн олсон.');
+      return;
+    }
+    const lines: Record<string, string[]> = {
+      crate: ['Хуучин модон авдар. Энэ удаад хоосон.', 'Авдар чимээгүй. Гэхдээ дараагийн түвшинд юу болохыг хэн мэдэх вэ.'],
+      lantern: ['Дэнлүү зөөлөн гэрэлтэж, шинэ хэсгийг гэрэлтүүлж байна.', 'Гэрлийн дотор жижигхэн од эргэлдэж байх шиг.'],
+      crystal: ['Болор чулуу дотроосоо гэрэлтэнэ. Хүрэхэд дулаахан.', 'Болорт чиний царай олон болж тусав.'],
+      statue: ['Хачин хөшөө. Хэн ч энэ хэлбэрийг тайлбарлаж чаддаггүй.', 'Хөшөө чамайг харж байгаа юм шиг санагдана.'],
+      chest: ['Эрдэнэсийн авдар. Хамгийн үнэтэй эрдэнэ нь мэдлэг гэдэг.', 'Авдрын түгжээ одоохондоо чимээгүй.'],
+      orb: ['Бөмбөлөг дотор өрөөний жижигхэн хуулбар харагдана.', 'Бөмбөлөг эргэлдээд намжив.'],
+      tree: ['Өрөө томрох тусам энэ мод ч бас ургадаг гэнэ.', 'Навчнууд чимээгүй шивнэлдэнэ.'],
+    };
+    this.card(id, this.cycle(`prop-${type}`, lines[type] ?? lines.crate));
+  }
+
+  // ------------------------------------------------------------------ hard mode
+  /** +3 stars to catch, 5 fewer seconds to do it in. Still beatable (the spawn
+   *  math leaves plenty of catchable stars in that window) but leaves little
+   *  room for mistakes. */
+  private get arcadeGoal() { return this.s.hardMode ? GOAL + 3 : GOAL; }
+  private get arcadeDuration() { return this.s.hardMode ? DURATION - 5 : DURATION; }
+  /** Mochi gets one fewer lap before it ducks back into hiding, so there's less
+   *  time to react and tap it. */
+  private creatureLoops(normal: number) { return this.s.hardMode ? Math.max(1, normal - 1) : normal; }
+
+  // ------------------------------------------------------------------ room themes
+  private validTheme(name: string): ThemeName {
+    return name in ROOM_THEMES ? (name as ThemeName) : 'default';
+  }
+
+  /** How many unique reward types have to be collected before a theme unlocks. */
+  private themeUnlocked(name: ThemeName) {
+    return Object.keys(this.s.collection).length >= ROOM_THEMES[name].unlockAt;
+  }
+
+  private setTheme(name: ThemeName) {
+    if (!this.themeUnlocked(name)) return;
+    this.s.roomTheme = name;
+    this.save();
+    this.c.world.setTheme(name);
+  }
+
+  // ------------------------------------------------------------------ daily reward
+  /** Call once per app launch, only for returning players (brand-new players get
+   *  their own onboarding toast instead — see main.ts). Awards a small reward and
+   *  bumps the streak on a fresh calendar day; a gap of more than one day resets it. */
+  checkDailyReward() {
+    const today = new Date().toLocaleDateString('sv-SE'); // cheap local YYYY-MM-DD
+    if (this.s.lastVisitDay === today) return;
+    const prev = this.s.lastVisitDay;
+    this.s.lastVisitDay = today;
+    const gapDays = prev ? Math.round((new Date(today).getTime() - new Date(prev).getTime()) / 86400000) : null;
+    this.s.dailyStreak = gapDays === 1 ? this.s.dailyStreak + 1 : 1;
+    this.save();
+    setTimeout(() => {
+      sound.chime();
+      ui.toast(`🎁 Өдрийн бэлэг! ${this.s.dailyStreak}-р өдөр дараалан ирлээ.`, 4500);
+      setTimeout(() => this.rollReward({ reason: `Өдрийн бэлэг — ${this.s.dailyStreak}-р өдөр` }), 1300);
+    }, 1800);
   }
 
   // ------------------------------------------------------------------ helpers
   private card(id: string, text: string, ms?: number) {
-    const base = id.startsWith('glyph') ? 'glyph' : id.startsWith('cube') ? 'cube' : id;
+    const base = this.baseOf(id);
     const o = OBJECTS[base] ?? { name: base, color: 'dark', icon: 'star' };
     this.cardAnchor = id;
     ui.showCard({ title: o.name, text, color: o.color, icon: o.icon }, ms);
@@ -143,6 +444,18 @@ export class Game {
     sound.chime();
     ui.achievement(a.title, a.desc);
     ui.setCounter(this.s.achievements.length, ACHIEVEMENTS.length);
+    // Secret achievements are side-goals for players who poke at everything, not
+    // just the 5-level story — collecting the full set (main + secret) used to lead
+    // nowhere once the finale was already seen. Now it unlocks a real post-game goal.
+    if (!this.s.hardModeUnlocked && this.s.achievements.length === ACHIEVEMENTS.length) {
+      this.s.hardModeUnlocked = true;
+      this.save();
+      setTimeout(() => {
+        sound.legendary();
+        ui.flash('#ffd36b', 0.5);
+        ui.toast('100%! Чи бүх амжилтыг цуглууллаа. Цэснээс "Хэцүү горим" нээгдлээ 🏆', 7000);
+      }, 900);
+    }
   }
 
   private screenPos(v: THREE.Vector3) {
@@ -211,10 +524,22 @@ export class Game {
     }
   }
 
+  private letterFor(id: string): string | undefined {
+    if (isExtStage(this.s.stage)) {
+      const src = this.extSources();
+      return id in src ? EXT_LEVELS[this.s.stage - EXT_START].word[src[id]] : undefined;
+    }
+    return LETTER_SOURCES[this.s.stage]?.[id];
+  }
+
+  private letterTotal() {
+    if (isExtStage(this.s.stage)) return EXT_LEVELS[this.s.stage - EXT_START].word.length;
+    return Object.keys(LETTER_SOURCES[this.s.stage] ?? {}).length;
+  }
+
   private async revealLetter(sourceId: string, at?: THREE.Vector3) {
-    const map = LETTER_SOURCES[this.s.stage];
-    if (!map || !map[sourceId] || this.s.letters.includes(sourceId)) return false;
-    const L = map[sourceId];
+    const L = this.letterFor(sourceId);
+    if (!L || this.s.letters.includes(sourceId)) return false;
     this.s.letters.push(sourceId);
     this.save();
     const pos = at ?? this.c.world.anchorOf(sourceId);
@@ -237,9 +562,10 @@ export class Game {
     await ui.flyLetter(L, sp.x, sp.y);
     sound.pop();
     this.refreshHUD();
-    if (this.s.letters.length === Object.keys(map).length) {
-      const where = this.s.stage === 0 ? 'Ширээн дээрх компьютер' : 'Аркад машин';
-      setTimeout(() => ui.toast(`Бүх үсэг олдлоо! ${where} дээр нууц үгээ оруул.`, 5000), 400);
+    if (this.s.letters.length === this.letterTotal()) {
+      const where = this.s.stage === 1 ? 'Аркад машин' : 'Ширээн дээрх компьютер';
+      const extra = isExtStage(this.s.stage) ? ' Үсгүүд холилдсон — сэжүүрийг ашиглан зөв дарааллыг ол!' : '';
+      setTimeout(() => ui.toast(`Бүх үсэг олдлоо! ${where} дээр нууц үгээ оруул.${extra}`, 6000), 400);
     }
     return true;
   }
@@ -247,9 +573,8 @@ export class Game {
   // ------------------------------------------------------------------ input
   hoverName(id: string | null) {
     if (!id) return null;
-    const base = id.startsWith('glyph') ? 'glyph' : id.startsWith('cube') ? 'cube' : id;
     if (id === 'creature' && this.c.creature.mode === 'hidden') return null;
-    return OBJECTS[base]?.name ?? null;
+    return OBJECTS[this.baseOf(id)]?.name ?? null;
   }
 
   onEmptyClick() {
@@ -261,12 +586,12 @@ export class Game {
     sound.click();
     if (!this.s.seen.includes(id)) {
       this.s.seen.push(id);
-      const hs = this.c.world.hotspots.get(id);
+      // New-object markers are managed by syncPropHotspots (they mean "still hides a letter").
+      const hs = id.startsWith('prop') ? undefined : this.c.world.hotspots.get(id);
       if (hs) gsap.to(hs.scale, { x: 0, y: 0, duration: 0.3, onComplete: () => { hs.visible = false; } });
-      if (this.s.seen.length === this.c.world.interactives.size) this.unlock('curator');
+      if ([...this.c.world.interactives.keys()].every((k) => this.s.seen.includes(k))) this.unlock('curator');
       this.save();
     }
-    this.countClick();
     this.unlock('hello');
     if (this.glitchOn) this.unlock('glitch');
     const obj = this.c.world.interactives.get(id);
@@ -275,6 +600,12 @@ export class Game {
       gsap.fromTo(obj.scale, { x: b.x * 0.92, y: b.y * 0.92, z: b.z * 0.92 }, { x: b.x, y: b.y, z: b.z, duration: 0.5, ease: 'elastic.out(1, 0.4)' });
     }
 
+    // Extended levels: an object hiding a letter opens a challenge instead of its usual reaction.
+    if (isExtStage(this.s.stage) && id in this.extSources() && !this.s.letters.includes(id)) {
+      void this.tryChallenge(id);
+      return;
+    }
+    if (id.startsWith('prop')) return this.onProp(id);
     if (id.startsWith('glyph')) return this.onGlyph(Number(id.slice(5)));
     if (id.startsWith('cube')) return this.onCube(Number(id.slice(4)));
     const handler: Record<string, () => void> = {
@@ -388,7 +719,7 @@ export class Game {
         this.card('redbook', 'Улаан номыг татахад тавиурын цаанаас хэн нэгэн шагайгаад... буцаад нуугдчихлаа?!');
       } else {
         sound.squeak();
-        setTimeout(() => creature.run(2), 250);
+        setTimeout(() => creature.run(this.creatureLoops(2)), 250);
         this.card('redbook', 'ЮУ ВЭ?! Тавиурын цаанаас жижигхэн амьтан гүйгээд гарлаа! Түүнийг барь!', 5000);
       }
       return;
@@ -411,7 +742,7 @@ export class Game {
         this.card('creature', 'Баригдлаа! Энэ бол Мочи. Тэр олон жил тавиурын ард нуугдаж, хэн нэгэн олохыг хүлээж байжээ.', 7000);
         this.unlock('detective');
         if (this.s.stage === 1) void this.revealLetter('creature', at);
-        setTimeout(() => this.rollReward(), 4500);
+        setTimeout(() => this.rollReward({ reason: 'Мочиг барьсны шагнал' }), 4500);
       }
       return;
     }
@@ -428,38 +759,36 @@ export class Game {
     }
   }
 
-  private onPlant() {
+  private async onPlant() {
     const { world } = this.c;
-    const n = this.count('plant');
     sound.boing();
-    if (n >= 7) {
-      this.counters.plant = 0;
-      this.unlock('overwatered');
-      this.card('plant', 'Хэтэрхий их хайр халамж! Ургамал аварга болоод... буцаад жижгэрчихлээ. Тайвшир.');
-      gsap.timeline()
-        .to(world.plantGrowth.scale, { x: 1.8, y: 2.4, z: 1.8, duration: 0.6, ease: 'back.out(2)' })
-        .to(world.plantGrowth.rotation, { z: 0.5, duration: 0.5, ease: 'power2.inOut' })
-        .to(world.plantGrowth.scale, { x: 0.6, y: 0.4, z: 0.6, duration: 0.4 })
-        .to(world.plantGrowth.rotation, { z: 0, duration: 0.6 }, '<')
-        .to(world.plantGrowth.scale, { x: 1, y: 1, z: 1, duration: 1.4, ease: 'elastic.out(1, 0.4)' });
-      this.puff(world.anchorOf('plant'), 10, '#9df5b0');
+    gsap.fromTo(world.plantGrowth.scale, { x: 0.9, y: 0.8, z: 0.9 }, { x: 1, y: 1, z: 1, duration: 0.8, ease: 'elastic.out(1, 0.35)' });
+    // Level 01's plant letter: understand what it wants (a choice), don't spam it.
+    if (this.s.stage === 0 && !this.s.letters.includes('plant')) {
+      const left = (this.lockedUntil.plant ?? 0) - performance.now();
+      if (left > 0) {
+        this.card('plant', `Ургамал гомдсон хэвээр... ${Math.ceil(left / 1000)} секундын дараа дахин оролд.`);
+        return;
+      }
+      this.busy = true;
+      const res = await runChallenge({ kind: 'riddle', level: 0, hard: false, title: 'Ургамал', riddle: PLANT_RIDDLE, noTimer: true });
+      this.busy = false;
+      if (res.ok) {
+        gsap.fromTo(world.plantGrowth.scale, { x: 1.4, y: 1.6, z: 1.4 }, { x: 1, y: 1, z: 1, duration: 1.2, ease: 'elastic.out(1, 0.35)' });
+        this.puff(world.anchorOf('plant'), 10, '#9df5b0');
+        this.card('plant', 'Ургамал баярласандаа навчаа дэлгээд... навчны завсраас нэг үсэг гарч ирлээ!');
+        void this.revealLetter('plant');
+      } else {
+        this.lockedUntil.plant = performance.now() + 4000;
+        this.card('plant', 'Ургамал гомдчихлоо. Түр хүлээгээд дахин оролд. Сэжүүр: юу хамгийн их хэрэгтэй гэж хэлсэн бэ?');
+      }
       return;
     }
-    const k = 1 + Math.min(n, 6) * 0.07;
-    gsap.fromTo(world.plantGrowth.scale, { x: k * 0.9, y: k * 0.8, z: k * 0.9 }, { x: k, y: k, z: k, duration: 0.8, ease: 'elastic.out(1, 0.35)' });
-    if (this.s.stage === 0 && n >= 3 && !this.s.letters.includes('plant')) {
-      this.card('plant', 'Ургамал дэлгэрээд навчны завсраас нэг үсэг гарч ирлээ!');
-      void this.revealLetter('plant');
-      return;
-    }
-    this.card('plant', [
+    this.card('plant', this.cycle('plant', [
       'Ургамал чамайг анзаарлаа.',
-      'Ургамал: "Илүү их анхаарал..."',
-      'Ургамал баярлаж байх шиг. Бүр томорч байна.',
-      'Ургамал: "Ахиад! Ахиад!"',
-      'Энэ ургамалд хязгаар гэж байхгүй бололтой.',
-      'Анхааруулга: ургамал аюултай хэмжээнд хүрч байна.',
-    ][Math.min(n - 1, 5)]);
+      'Ургамал: "Баярлалаа, ярилцаж өгсөнд."',
+      'Ургамал нартай өдрийг санагалзаж байх шиг.',
+    ]));
   }
 
   private onClock() {
@@ -470,7 +799,6 @@ export class Game {
       this.rgbGlitch(0.008, 1.6);
       this.shakeCamera(0.08, 1);
       gsap.to(o, { v: this.clockSpin - Math.PI * 14, duration: 2.2, ease: 'power3.inOut', onUpdate: () => { this.clockSpin = o.v; } });
-      this.unlock('timetraveler');
       this.card('clock', 'Цаг ухарч эргэлээ! Чи 3 секундийн өмнөх үе рүү аялчихлаа. Ялгаа мэдрэгдэж байна уу?');
       return;
     }
@@ -521,7 +849,6 @@ export class Game {
   private disco() {
     const { world, creature } = this.c;
     this.discoOn = true;
-    this.unlock('party');
     this.card('lamp', 'PARTY OF ONE! Чийдэн диско горимд шилжлээ. Бүжиглэ!');
     sound.fanfare();
     const lamp = world.lights.lamp;
@@ -542,7 +869,9 @@ export class Game {
       clearInterval(iv);
       lamp.color.copy(orig);
       world.lights.fill.color.copy(origFill);
-      world.neonMat.emissive.set('#5ab8ff');
+      // Was hardcoded to the default theme's blue — broke the neon cloud's color
+      // on an alt room theme once disco ended. Restore to whatever's active instead.
+      world.neonMat.emissive.set(ROOM_THEMES[this.validTheme(this.s.roomTheme)].neon);
       for (const b of world.bulbs) b.mat.emissive.copy(b.base);
       if (this.s.stage < 5) creature.dance(false);
       this.discoOn = false;
@@ -569,6 +898,8 @@ export class Game {
 
   private onWindow() {
     const { sky } = this.c;
+    // Stargazer is about noticing the sky's own meteor event in time — not clicking the window repeatedly.
+    if (performance.now() < this.meteorEventUntil) this.unlock('stargazer');
     if (this.showerCooldown > 0) {
       this.card('window', 'Тэнгэр амсхийж байна. Хэдэн секундийн дараа дахиад хар.');
       return;
@@ -576,7 +907,6 @@ export class Game {
     this.showerCooldown = 7;
     sky.meteorShower(20);
     sound.whoosh();
-    this.countMeteor();
     if (this.s.stage === 1 && !this.s.letters.includes('window')) {
       this.card('window', 'Цонхоор харахад солирын бороо орж эхэллээ! Нэг солир цонхны тавцан дээр унах шиг боллоо...', 5000);
       setTimeout(() => {
@@ -592,28 +922,10 @@ export class Game {
     ]));
   }
 
-  private countMeteor() {
-    this.s.meteorCount++;
-    this.save();
-    if (this.s.meteorCount >= 3) this.unlock('stargazer');
-  }
-
-  private countClick() {
-    this.s.totalClicks++;
-    this.save();
-    if (this.s.totalClicks >= 150) this.unlock('curious');
-  }
-
   private onBeanbag() {
     const { world } = this.c;
-    const n = this.count('beanbag');
     sound.boing();
     gsap.fromTo(world.beanbagInner.scale, { x: 1.18, y: 0.35, z: 1.18 }, { x: 1, y: 0.55, z: 1, duration: 1, ease: 'elastic.out(1, 0.3)' });
-    if (n === 10) {
-      this.unlock('sitter');
-      this.card('beanbag', 'Арав дахь удаагаа суулаа. Чи одоо мэргэжлийн суугч боллоо. Баяр хүргэе!');
-      return;
-    }
     this.card('beanbag', this.cycle('bean', [
       'Пуф! Дэлхийн хамгийн зөөлөн шийдвэр.',
       'Зөөлөн суудал чамайг тэвэрч авлаа.',
@@ -626,9 +938,8 @@ export class Game {
     const { world } = this.c;
     const n = this.count('poster');
     sound.tick();
-    if (n === 6) {
+    if (n % 6 === 0) {
       gsap.to(world.poster.rotation, { z: 0, duration: 1.2, ease: 'elastic.out(1, 0.3)' });
-      this.unlock('designer');
       this.card('poster', 'Төгс шулуун! ...Хэдийгээр өмнөх 5 удаа чи л муруйлгасан ч гэсэн.');
       return;
     }
@@ -659,10 +970,8 @@ export class Game {
   }
 
   private onMug() {
-    const n = this.count('mug');
     sound.steam();
     this.puff(this.c.world.anchorOf('mug').add(new THREE.Vector3(0, -0.12, 0)), 7);
-    if (n === 3) this.unlock('coffee');
     this.card('mug', this.cycle('mug', [
       'Кофе. 2019 оноос хойш хүйтэн хэвээр.',
       'Аяган дээр "World\'s okayest explorer" гэж бичжээ.',
@@ -682,7 +991,7 @@ export class Game {
     this.card('tesseract', first
       ? 'Тессеракт — 4 хэмжээст шоо. Чи түүнд хүрэхэд орон зай хоромхон зуур эвхэгдлээ!'
       : 'Тессеракт эргэлдэж байна. Дөрөв дэх хэмжээс өнөөдөр ч гэсэн ажиллаж байна.');
-    if (first) setTimeout(() => this.rollReward({ id: 'tesseract' }), 1500);
+    if (first) setTimeout(() => this.rollReward({ id: 'tesseract', reason: 'Тессерактад хүрсний шагнал' }), 1500);
   }
 
   // ------------------------------------------------------------------ glyphs + door
@@ -738,6 +1047,7 @@ export class Game {
     this.puff(new THREE.Vector3(-4.6, 0.2, -3.0), 14, '#c9b8ff');
     for (const cube of world.cubes) cube.visible = true;
     gsap.to(world.lights.alcove, { intensity: 9, duration: 2.5, delay: 0.5 });
+    world.lightBase.set(world.lights.alcove, 9);
     await gsap.to(world.bookshelf.position, { z: -1.8 + 2.6, duration: 2.6, ease: 'power2.inOut' });
     ui.flash('#b388ff', 0.4);
     sound.success();
@@ -750,10 +1060,10 @@ export class Game {
     if (!this.s.creatureCaught && creature.mode === 'hidden') {
       setTimeout(() => {
         ui.toast('Мочи нууц өрөөнөөс гүйгээд гарлаа! Барьж аваарай!');
-        creature.run(3);
+        creature.run(this.creatureLoops(3));
       }, 2500);
     }
-    setTimeout(() => this.rollReward(), 5000);
+    setTimeout(() => this.rollReward({ reason: 'Нууц өрөөг нээсний шагнал' }), 5000);
   }
 
   private linePos(k: number) {
@@ -816,7 +1126,7 @@ export class Game {
     this.s.stage = 5;
     this.s.finishedMs = this.s.playMs + (performance.now() - this.playStart);
     this.save();
-    if (this.s.finishedMs <= 6 * 60 * 1000) this.unlock('speedrun');
+    if (this.s.finishedMs <= 8 * 60 * 1000) this.unlock('speedrun');
     this.refreshHUD();
     await this.cinematic(new THREE.Vector3(0.4, 2.6, 0.9), new THREE.Vector3(11, 7.5, 11), 1.4);
     sound.powerDown();
@@ -844,7 +1154,7 @@ export class Game {
     this.busy = false;
     setTimeout(() => {
       controls.autoRotate = false;
-      this.rollReward({ rarity: 'legendary' });
+      this.rollReward({ id: 'crown', reason: 'Бүх үндсэн тааврыг даваад дуусгасны шагнал' });
       this.openFinaleModal();
     }, 1500);
   }
@@ -891,32 +1201,26 @@ export class Game {
 
   /** Which of the 3 endings the player earned — reusing existing save data,
    *  no new tracking needed. Checked at the moment the finale modal opens. */
-  private endingVariant(): 'collector' | 'speedrun' | 'normal' {
-    if (this.s.achievements.length >= ACHIEVEMENTS.length) return 'collector';
-    if ((this.s.finishedMs ?? this.s.playMs) <= 6 * 60 * 1000) return 'speedrun';
-    return 'normal';
+  private endingVariant(): 'speedrun' | 'normal' {
+    return (this.s.finishedMs ?? this.s.playMs) <= 8 * 60 * 1000 ? 'speedrun' : 'normal';
   }
 
+  /** End of Level 05 — not the end of the game: closing this grows the room into Level 06. */
   private openFinaleModal() {
     const total = this.s.finishedMs ?? this.s.playMs;
     const mins = Math.floor(total / 60000);
     const secs = Math.floor((total % 60000) / 1000);
     const owned = REWARDS.filter((r) => this.s.collection[r.id]).length;
     const copy = {
-      collector: {
-        eyebrow: 'Бүх нууц олдлоо',
-        h2: 'You found every last secret<br/>in Little World',
-        muted: 'Энэ өрөөнд чамаас нуугдах зүйл дахиж үлдсэнгүй — чи жинхэнэ мөрдөгч.',
-      },
       speedrun: {
-        eyebrow: 'Рекорд хурдаар тайллаа',
+        eyebrow: 'Эхний 5 түвшин — рекорд хурдаар',
         h2: 'You blazed through<br/>Little World',
-        muted: 'Чи үнэхээр хурдан тайллаа! Гэхдээ яарсандаа алгассан нууц амжилтууд байж магадгүй шүү — дахиад нэг эргэж хараарай.',
+        muted: 'Гэхдээ энэ бол зөвхөн эхлэл. Өрөө томорч, илүү урт үгтэй, илүү хэцүү 7 түвшин хүлээж байна.',
       },
       normal: {
-        eyebrow: 'Бүх үндсэн таавар тайлагдлаа',
-        h2: 'You explored the entire<br/>Little World',
-        muted: 'Гэхдээ энэ өрөөнд нууц амжилтууд үлдсэн байж магадгүй... Бүх зүйл дээр дарсан уу?',
+        eyebrow: 'Эхний 5 түвшин давлаа',
+        h2: 'You explored<br/>Little World',
+        muted: 'Гэхдээ энэ бол зөвхөн эхлэл. Өрөө томорч, илүү урт үгтэй, илүү хэцүү 7 түвшин хүлээж байна.',
       },
     }[this.endingVariant()];
     const el = h('div', { class: 'finale' });
@@ -935,11 +1239,11 @@ export class Game {
     share.addEventListener('click', () => this.downloadShareCard());
     const coll = h('button', { class: 'btn-ghost' }, 'Цуглуулга харах');
     coll.addEventListener('click', () => { ui.closeModal(); setTimeout(() => this.openCollection(), 300); });
-    const keep = h('button', { class: 'btn-ghost' }, 'Үргэлжлүүлэн судлах');
+    const keep = h('button', { class: 'btn-ghost' }, 'Түвшин 06 руу →');
     keep.addEventListener('click', () => ui.closeModal());
     actions.append(share, coll, keep);
     el.append(actions);
-    ui.openModal(el, { className: 'modal-finale' });
+    ui.openModal(el, { className: 'modal-finale', onClose: () => this.beginExtLevels() });
   }
 
   async downloadShareCard() {
@@ -1015,14 +1319,25 @@ export class Game {
   }
 
   // ------------------------------------------------------------------ rewards
-  rollReward(opts: { rarity?: Rarity; id?: string } = {}) {
+  /** The 3 legendary items are each tied to one specific accomplishment (see the
+   *  `id:` call sites below) rather than being just another slot-machine outcome —
+   *  so they're excluded from every *random* roll, including when rarity happens
+   *  to land on 'legendary' with no explicit id (defensive: that combination
+   *  shouldn't occur anymore now that every legendary-granting call site passes
+   *  an explicit id, but this keeps a stray future call from crashing on an
+   *  empty pool instead of silently reaching one of these "earned" items). */
+  private static readonly DETERMINISTIC_REWARDS = new Set(['tesseract', 'crown', 'hourglass']);
+
+  rollReward(opts: { rarity?: Rarity; id?: string; reason?: string } = {}) {
     let item: RewardDef | undefined = opts.id ? REWARDS.find((r) => r.id === opts.id) : undefined;
     if (!item) {
       const r = Math.random();
-      const rarity: Rarity = opts.rarity ?? (r < 0.1 ? 'legendary' : r < 0.42 ? 'rare' : 'common');
-      const pool = REWARDS.filter((x) => x.rarity === rarity && x.id !== 'tesseract');
+      const rarity: Rarity = opts.rarity ?? (r < 0.42 ? 'rare' : 'common');
+      const excl = (x: RewardDef) => !Game.DETERMINISTIC_REWARDS.has(x.id);
+      const pool = REWARDS.filter((x) => x.rarity === rarity && excl(x));
       const fresh = pool.filter((x) => !this.s.collection[x.id]);
-      item = pick(fresh.length ? fresh : pool);
+      const candidates = fresh.length ? fresh : pool;
+      item = pick(candidates.length ? candidates : REWARDS.filter(excl));
     }
     const dup = !!this.s.collection[item.id];
     this.s.collection[item.id] = (this.s.collection[item.id] ?? 0) + 1;
@@ -1039,10 +1354,16 @@ export class Game {
         <span class="rarity">${RARITY_LABEL[reward.rarity]}${dup ? ' · давхардсан' : ' · шинэ!'}</span>
         <h3></h3>
         <p></p>
+        <small class="reason-line" hidden></small>
         <small class="title-gen"></small>
       </div>`;
     (el.querySelector('h3') as HTMLElement).textContent = reward.name;
     (el.querySelector('.reward-card p') as HTMLElement).textContent = reward.desc;
+    if (opts.reason) {
+      const reasonEl = el.querySelector('.reason-line') as HTMLElement;
+      reasonEl.textContent = `🏷 ${opts.reason}`;
+      reasonEl.hidden = false;
+    }
     (el.querySelector('.title-gen') as HTMLElement).textContent = `Шинэ цол: ${title}`;
     const btn = h('button', { class: 'btn-primary', disabled: 'true' }, 'Гоё!');
     btn.addEventListener('click', () => ui.closeModal());
@@ -1090,12 +1411,20 @@ export class Game {
     tabs.append(t1, t2);
     const grid = h('div', { class: 'grid' });
     const list = h('div', { class: 'ach-list', hidden: 'true' });
+    // The 3 legendary items are each earned a specific way (not a random roll —
+    // see rollReward()), so unlike the rest, their locked tooltip can honestly say
+    // how to get them instead of just "???".
+    const LEGENDARY_HOW: Record<string, string> = {
+      tesseract: 'Нууц өрөөнд тессерактад хүрвэл олдоно.',
+      crown: 'Тоглоомын бүх үндсэн таавар даваад дуусгавал олдоно.',
+      hourglass: 'Бүх 12 түвшнийг давбал олдоно.',
+    };
     for (const r of REWARDS) {
       const n = this.s.collection[r.id] ?? 0;
       const item = h('div', { class: `item rarity-${r.rarity}${n ? '' : ' locked'}` });
       item.innerHTML = `<div class="art">${n ? shapeSvg(r.shape, r.color, 48) : icon('lock', 26)}</div>`;
       item.append(h('b', {}, n ? r.name : '???'), h('small', {}, n ? `${RARITY_LABEL[r.rarity]}${n > 1 ? ` ×${n}` : ''}` : RARITY_LABEL[r.rarity]));
-      if (n) item.title = r.desc;
+      item.title = n ? r.desc : (LEGENDARY_HOW[r.id] ?? 'Өрөөн дэх зүйлсийг судалж, санамсаргүй шагналуудаас олоорой.');
       grid.append(item);
     }
     for (const a of ACHIEVEMENTS) {
@@ -1131,6 +1460,12 @@ export class Game {
       const map = LETTER_SOURCES[0];
       const found = this.s.letters.map((id) => map[id]).join(' ');
       if (found) print(`Олдсон үсгүүд: ${found}`, 'gold');
+    } else if (isExtStage(this.s.stage)) {
+      const ext = EXT_LEVELS[this.s.stage - EXT_START];
+      print(`ТҮВШИН ${String(this.s.stage).padStart(2, '0')} — ${ext.title}`, 'green');
+      print(`Сэжүүр: «${ext.clue}» (англи үг, ${ext.word.length} үсэг)`);
+      const found = this.foundLetters();
+      print(found.length ? `Олдсон үсгүүд (холилдсон): ${found.join(' ')}  [${found.length}/${ext.word.length}]` : 'Одоогоор үсэг олдоогүй. Өрөөн дэх сорилтуудыг дав.', 'gold');
     } else {
       print('Сайн уу, мөрдөгч. Тусламж: help', 'green');
     }
@@ -1153,6 +1488,34 @@ export class Game {
           setTimeout(() => { ui.closeModal(); void this.solveOpen(); }, 1100);
         } else print('Хайрцаг аль хэдийн нээгдсэн. Дахиад нээвэл... юу ч байхгүй.');
         return;
+      }
+      if (isExtStage(this.s.stage)) {
+        const word = EXT_LEVELS[this.s.stage - EXT_START].word;
+        const all = this.s.letters.length >= word.length;
+        if (cmd === word) {
+          if (all) {
+            print('ACCESS GRANTED', 'green big');
+            sound.success();
+            input.disabled = true;
+            setTimeout(() => { ui.closeModal(); void this.solveExtLevel(); }, 1100);
+          } else print(`Үг таарч магадгүй... гэхдээ эхлээд бүх үсгээ ол (${this.s.letters.length}/${word.length}).`, 'gold');
+          return;
+        }
+        if (cmd.length === word.length && /^[A-Z]+$/.test(cmd)) {
+          if (!all) {
+            print(`Эхлээд бүх үсгээ ол (${this.s.letters.length}/${word.length}).`, 'gold');
+            return;
+          }
+          // Wordle-style feedback helps unscramble — but a wrong guess costs a mistake.
+          let right = 0;
+          for (let i = 0; i < word.length; i++) if (cmd[i] === word[i]) right++;
+          this.s.levelMistakes++;
+          this.save();
+          sound.error();
+          gsap.fromTo(el, { x: -8 }, { x: 0, duration: 0.4, ease: 'elastic.out(1.2, 0.25)' });
+          print(`Буруу. Зөв байрлалтай үсэг: ${right}/${word.length}. (Алдаа: ${this.s.levelMistakes})`, 'red');
+          return;
+        }
       }
       const cmds: Record<string, () => void> = {
         HELP: () => print('Командууд: help, hint, joke, whoami, time, clear ... бас хэд хэдэн нууц команд.', 'dim'),
@@ -1245,7 +1608,7 @@ export class Game {
       className: 'modal-nothing',
       onClose: () => {
         this.card('box', 'Хайрцгийн ёроолд ямар нэг юм наалдсан юм шиг... Дахиад дарж шалгаад үз! Бас шагнал болгон жижигхэн бэлэг өгье.', 8000);
-        setTimeout(() => this.rollReward(), 2600);
+        setTimeout(() => this.rollReward({ reason: 'Анхны нууц үгийг тайлсны шагнал' }), 2600);
       },
     });
   }
@@ -1256,6 +1619,10 @@ export class Game {
     for (const m of world.arcadeStrips) gsap.to(m, { emissiveIntensity: on ? 3 : 0.15, duration: 0.8 });
     gsap.to(world.arcadeMarquee, { emissiveIntensity: on ? 1.6 : 0.35, duration: 0.8 });
     gsap.to(world.lights.arcade, { intensity: on ? 5 : 0, duration: 0.8 });
+    // Register this as the arcade light's new "on" baseline so a later blackout
+    // can actually darken it, and the post-blackout restore brings it back to 5
+    // instead of snapping it back to its pre-power-up 0.
+    world.lightBase.set(world.lights.arcade, on ? 5 : 0);
   }
 
   private openArcadePassword() {
@@ -1310,7 +1677,8 @@ export class Game {
   private openArcadeGame() {
     const el = h('div', { class: 'arcade-game' });
     const cv = h('canvas', { class: 'arcade-canvas' });
-    const info = h('p', { class: 'pixel small' }, `★ ${GOAL} од барь · хулгана/хуруу эсвэл ← →`);
+    const goal = this.arcadeGoal;
+    const info = h('p', { class: 'pixel small' }, `★ ${goal} од барь · хулгана/хуруу эсвэл ← →`);
     el.append(cv, info);
     let stop: (() => void) | null = null;
     const start = () => {
@@ -1328,14 +1696,14 @@ export class Game {
             showRetry();
           }
         } else {
-          info.textContent = `${score}/${GOAL} — дахиад нэг оролдоё!`;
+          info.textContent = `${score}/${goal} — дахиад нэг оролдоё!`;
           showRetry();
         }
-      });
+      }, { goal: this.arcadeGoal, duration: this.arcadeDuration });
     };
     const showRetry = () => {
       const b = h('button', { class: 'btn-primary pixel-btn' }, 'RETRY');
-      b.addEventListener('click', () => { b.remove(); info.textContent = `★ ${GOAL} од барь`; start(); });
+      b.addEventListener('click', () => { b.remove(); info.textContent = `★ ${goal} од барь`; start(); });
       el.append(b);
       b.focus();
     };
@@ -1347,7 +1715,10 @@ export class Game {
     this.s.stage = 3;
     // Rank the win by how much of the clock was left: gold if you finished with
     // over half the time to spare, silver over a quarter, bronze for any win at all.
-    const rank = timeLeft >= DURATION * 0.5 ? 3 : timeLeft >= DURATION * 0.25 ? 2 : 1;
+    // Uses this.arcadeDuration (the round's real duration, Hard Mode or not) rather
+    // than the flat DURATION constant, so the fraction stays correct either way.
+    const dur = this.arcadeDuration;
+    const rank = timeLeft >= dur * 0.5 ? 3 : timeLeft >= dur * 0.25 ? 2 : 1;
     this.s.bestArcadeRank = Math.max(this.s.bestArcadeRank, rank);
     this.save();
     this.refreshHUD();
@@ -1360,20 +1731,36 @@ export class Game {
     b.addEventListener('click', () => ui.closeModal());
     el.append(b);
     ui.openModal(el, { className: 'modal-arcade' });
-    this.rollReward();
+    this.rollReward({ reason: 'Star Catcher тоглоомд яллагын шагнал' });
   }
 
   // ------------------------------------------------------------------ hints & menu
+  /** Story stages each have their own hints; all extended levels share one set; then "done". */
+  private hintList() {
+    if (this.s.stage < EXT_START) return HINTS[this.s.stage];
+    return HINTS[isExtStage(this.s.stage) ? 6 : 7];
+  }
+
   currentHint() {
-    const list = HINTS[Math.min(this.s.stage, HINTS.length - 1)];
+    const list = this.hintList();
     return list[Math.min(this.hintIdx, list.length - 1)];
   }
 
   showHint() {
-    const list = HINTS[Math.min(this.s.stage, HINTS.length - 1)];
-    const text = list[this.hintIdx % list.length];
     this.hintIdx++;
     sound.chime();
+    // Every 3rd press nudges toward an undiscovered secret achievement instead of
+    // the normal stage hint — these used to be entirely silent, which made them
+    // feel like arbitrary trivia rather than something you could actually go for.
+    if (this.hintIdx % 3 === 0) {
+      const undiscovered = ACHIEVEMENTS.filter((a) => a.secret && !this.s.achievements.includes(a.id) && SECRET_CLUES[a.id]);
+      if (undiscovered.length) {
+        ui.toast(`🔎 Нууц сэжүүр: ${SECRET_CLUES[pick(undiscovered).id]}`, 6500);
+        return;
+      }
+    }
+    const list = this.hintList();
+    const text = list[(this.hintIdx - 1) % list.length];
     ui.toast(text, 6000);
   }
 
@@ -1410,6 +1797,45 @@ export class Game {
     mk(this.s.muted ? 'Дуу асаах' : 'Дуу унтраах', () => { this.toggleSound(); ui.closeModal(); });
     mk('Зураг авах', () => { ui.closeModal(); setTimeout(() => this.takePhoto(), 300); });
     if (this.s.stage >= 5) mk('Амжилтын карт татах', () => void this.downloadShareCard());
+    if (this.s.hardModeUnlocked) {
+      const label = () => (this.s.hardMode ? '🔥 Хэцүү горим: Асаалттай' : 'Хэцүү горим: Унтраалттай');
+      const hardBtn = mk(label(), () => {
+        this.s.hardMode = !this.s.hardMode;
+        this.save();
+        hardBtn.textContent = label();
+        hardBtn.classList.toggle('hard-on', this.s.hardMode);
+        ui.toast(this.s.hardMode
+          ? 'Хэцүү горим асав: Аркад хурдан дуусна, санамсаргүй үйл явдлууд нэмэгдэнэ.'
+          : 'Хэцүү горим унтарлаа.', 3500);
+      });
+      hardBtn.classList.toggle('hard-on', this.s.hardMode);
+    }
+    el.append(h('p', { class: 'muted small theme-label' }, 'Өрөөний өнгө'));
+    const themeRow = h('div', { class: 'theme-row' });
+    (Object.keys(ROOM_THEMES) as ThemeName[]).forEach((name) => {
+      const def = ROOM_THEMES[name];
+      const unlocked = this.themeUnlocked(name);
+      const active = this.validTheme(this.s.roomTheme) === name;
+      const btn = h('button', {
+        class: `theme-swatch${active ? ' active' : ''}${unlocked ? '' : ' locked'}`,
+        style: `background:${def.wall}`,
+        title: unlocked ? def.label : `${def.label} — ${def.unlockAt} төрлийн шагнал цуглуулахад нээгдэнэ`,
+        'aria-label': def.label,
+      });
+      if (!unlocked) btn.innerHTML = icon('lock', 14);
+      btn.addEventListener('click', () => {
+        if (!unlocked) {
+          ui.toast(`Энэ өнгийг нээхийн тулд дор хаяж ${def.unlockAt} төрлийн шагнал цуглуулаарай (одоо: ${Object.keys(this.s.collection).length}).`, 3500);
+          return;
+        }
+        this.setTheme(name);
+        themeRow.querySelectorAll('.theme-swatch').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        ui.toast(`Өрөөний өнгө: ${def.label}`, 2000);
+      });
+      themeRow.append(btn);
+    });
+    el.append(themeRow);
     let armed = false;
     const reset = mk('Шинээр эхлэх', () => {
       if (!armed) {
@@ -1424,6 +1850,9 @@ export class Game {
     if (this.s.bestArcadeRank > 0) {
       const rankLabel = ['', 'BRONZE 🥉', 'SILVER 🥈', 'GOLD 🥇'][this.s.bestArcadeRank];
       el.append(h('p', { class: 'muted small' }, `Star Catcher-ийн шилдэг дүн: ${rankLabel}`));
+    }
+    if (this.s.dailyStreak > 0) {
+      el.append(h('p', { class: 'muted small' }, `🔥 Дараалсан өдрийн тоо: ${this.s.dailyStreak}`));
     }
     el.append(h('p', { class: 'muted small' }, 'Little World · Three.js + WebAudio · Ахиц энэ төхөөрөмж дээр хадгалагдана.'));
     ui.openModal(el, { className: 'modal-menu' });
@@ -1442,7 +1871,7 @@ export class Game {
     if (ev === 'blackout') void this.blackout();
     else if (ev === 'meteor') {
       this.c.sky.meteorShower(22);
-      this.countMeteor();
+      this.meteorEventUntil = performance.now() + 9000;
       ui.toast('Цонхны гадаа солирын бороо орж байна! Хүсэл шивнээрэй ✦');
     } else void this.gravityGlitch();
   }
@@ -1526,8 +1955,12 @@ export class Game {
         } else {
           // Rarer early on, noticeably more frequent by the finale — the room
           // should feel like it's waking up more as the mystery gets deeper.
-          const lo = Math.max(22, 45 - this.s.stage * 5);
-          const hi = Math.max(38, 80 - this.s.stage * 6);
+          // Hard Mode (unlocked at 100%) shrinks this further still — one of the
+          // few things that keeps mattering forever, since these events never
+          // stop firing even long after the finale.
+          const hardK = this.s.hardMode ? 0.6 : 1;
+          const lo = Math.max(22, 45 - this.s.stage * 5) * hardK;
+          const hi = Math.max(38, 80 - this.s.stage * 6) * hardK;
           this.eventTimer = rand(lo, hi);
           this.randomEvent();
         }
@@ -1613,6 +2046,9 @@ export class Game {
         lines.push('STATUS: LOCKED', `LETTERS: ${this.s.letters.map((id) => map[id]).join(' ') || '?'}`, '', `PASSWORD: ${this.terminalText}${blink ? '_' : ' '}`);
       } else if (this.s.stage < 5) {
         lines.push('BOX.SECRET ... OPENED', 'CONTENTS ... NOTHING', '', `> ${this.terminalText}${blink ? '_' : ' '}`);
+      } else if (isExtStage(this.s.stage)) {
+        const n = EXT_LEVELS[this.s.stage - EXT_START].word.length;
+        lines.push(`LEVEL ${this.s.stage}: LOCKED`, `LETTERS: ${this.s.letters.length}/${n}`, '', `> ${this.terminalText}${blink ? '_' : ' '}`);
       } else {
         lines.push('ALL SYSTEMS: WONDERFUL', 'LITTLE WORLD: EXPLORED', '', `THANK YOU${blink ? ' <3' : ''}`);
       }

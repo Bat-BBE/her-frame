@@ -7,14 +7,30 @@ export interface SaveData {
   seen: string[];
   boxP: boolean;
   creatureCaught: boolean;
-  meteorCount: number;
   muted: boolean;
   playMs: number;
   finishedMs?: number;
   noteDismissed: boolean;
-  totalClicks: number;
+  /** Mistakes (failed challenges + wrong passwords) in the current extended level. */
+  levelMistakes: number;
+  /** playMs value when the current extended level began. */
+  levelStartMs: number;
+  /** Riddles solved on the first attempt at that object (Riddle Master). */
+  riddleWins: number;
+  /** Timed math challenges solved (Human Calculator). */
+  mathWins: number;
   /** Best Star Catcher result: 0 = none yet, 1 = bronze, 2 = silver, 3 = gold. */
   bestArcadeRank: number;
+  /** True once every achievement (main + secret) has been collected at least once. */
+  hardModeUnlocked: boolean;
+  /** Player's own toggle, only meaningful once hardModeUnlocked is true. */
+  hardMode: boolean;
+  /** 'default' | 'mint' | 'sunset' | 'galaxy' — kept as a plain string here so
+   *  state.ts doesn't need to depend on world.ts's ThemeName type. */
+  roomTheme: string;
+  /** YYYY-MM-DD of the last day a daily reward was claimed. */
+  lastVisitDay?: string;
+  dailyStreak: number;
 }
 
 const KEY = 'little-world-save-v1';
@@ -28,12 +44,18 @@ const fresh = (): SaveData => ({
   seen: [],
   boxP: false,
   creatureCaught: false,
-  meteorCount: 0,
   muted: false,
   playMs: 0,
   noteDismissed: false,
-  totalClicks: 0,
+  levelMistakes: 0,
+  levelStartMs: 0,
+  riddleWins: 0,
+  mathWins: 0,
   bestArcadeRank: 0,
+  hardModeUnlocked: false,
+  hardMode: false,
+  roomTheme: 'default',
+  dailyStreak: 0,
 });
 
 export function loadSave(): SaveData {

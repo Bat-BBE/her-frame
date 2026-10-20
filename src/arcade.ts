@@ -8,8 +8,15 @@ export const DURATION = 22;
 
 /** Runs the Star Catcher mini-game on the given canvas. Returns a cleanup function.
  *  `onEnd`'s third argument is the seconds left on the clock when the round ended —
- *  the caller uses it to rank a win as bronze/silver/gold. */
-export function runStarCatcher(canvas: HTMLCanvasElement, onEnd: (win: boolean, score: number, timeLeft: number) => void) {
+ *  the caller uses it to rank a win as bronze/silver/gold. `opts` lets Hard Mode
+ *  tighten the goal/duration without this module knowing anything about save state. */
+export function runStarCatcher(
+  canvas: HTMLCanvasElement,
+  onEnd: (win: boolean, score: number, timeLeft: number) => void,
+  opts: { goal?: number; duration?: number } = {},
+) {
+  const GOAL_N = opts.goal ?? GOAL;
+  const DURATION_N = opts.duration ?? DURATION;
   const W = 320, H = 420;
   canvas.width = W;
   canvas.height = H;
@@ -20,7 +27,7 @@ export function runStarCatcher(canvas: HTMLCanvasElement, onEnd: (win: boolean, 
   let targetX = W / 2;
   let score = 0;
   let lives = 3;
-  let time = DURATION;
+  let time = DURATION_N;
   let countdown = 3;
   let spawn = 0;
   let over = false;
@@ -130,7 +137,7 @@ export function runStarCatcher(canvas: HTMLCanvasElement, onEnd: (win: boolean, 
     } else if (!over) {
       time -= dt;
       spawn -= dt;
-      const progress = 1 - time / DURATION;
+      const progress = 1 - time / DURATION_N;
       if (spawn <= 0) {
         spawn = 0.5 - progress * 0.24;
         const r = Math.random();
@@ -165,7 +172,7 @@ export function runStarCatcher(canvas: HTMLCanvasElement, onEnd: (win: boolean, 
       }
       if (lives <= 0 || time <= 0) {
         over = true;
-        const win = lives > 0 && score >= GOAL;
+        const win = lives > 0 && score >= GOAL_N;
         setTimeout(() => onEnd(win, score, Math.max(0, time)), 900);
       }
     }
@@ -211,7 +218,7 @@ export function runStarCatcher(canvas: HTMLCanvasElement, onEnd: (win: boolean, 
     ctx.textBaseline = 'top';
     ctx.fillStyle = '#ffd36b';
     ctx.textAlign = 'left';
-    ctx.fillText(`★ ${score}/${GOAL}`, 10, 10);
+    ctx.fillText(`★ ${score}/${GOAL_N}`, 10, 10);
     ctx.textAlign = 'right';
     ctx.fillStyle = '#ff7eb6';
     ctx.fillText('♥'.repeat(Math.max(0, lives)) + '♡'.repeat(Math.max(0, 3 - lives)), W - 10, 10);
@@ -235,7 +242,7 @@ export function runStarCatcher(canvas: HTMLCanvasElement, onEnd: (win: boolean, 
       ctx.fillRect(0, 0, W, H);
       ctx.font = '16px "Press Start 2P", monospace';
       ctx.textBaseline = 'middle';
-      const win = lives > 0 && score >= GOAL;
+      const win = lives > 0 && score >= GOAL_N;
       ctx.fillStyle = win ? '#7ed957' : '#ff3b5c';
       ctx.fillText(win ? 'YOU WIN!' : 'GAME OVER', W / 2, H / 2);
     }

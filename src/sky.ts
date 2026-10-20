@@ -134,14 +134,17 @@ export class Sky {
       this.group.add(s);
     }
 
+    // Was a 1.6x-bright sphere under an 8x-radius, 0.35-opacity additive halo — with
+    // bloom on top that combination rendered as a single featureless white blob that
+    // swallowed a large share of the frame instead of reading as a moon.
     this.moon = new THREE.Mesh(
       new THREE.SphereGeometry(5, 32, 16),
-      new THREE.MeshBasicMaterial({ color: new THREE.Color('#fff4d6').multiplyScalar(1.6) }),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color('#fff4d6').multiplyScalar(1.1) }),
     );
     this.moon.position.set(-60, -16, -42);
     this.group.add(this.moon);
-    const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: nebTex, color: '#ffe9b0', transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false }));
-    halo.scale.setScalar(40);
+    const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: nebTex, color: '#ffe9b0', transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false }));
+    halo.scale.setScalar(22);
     halo.position.copy(this.moon.position);
     this.group.add(halo);
 
