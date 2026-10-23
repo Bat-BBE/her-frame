@@ -1,4 +1,5 @@
 import './style.css';
+import './house.css';
 import * as THREE from 'three';
 import gsap from 'gsap';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -12,10 +13,13 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { World } from './world';
 import { Sky } from './sky';
 import { Creature } from './creature';
+import { Shadow } from './shadow';
+import { Avatar } from './avatar';
 import { Game } from './game';
 import { sound } from './audio';
 import { initUI, ui, icon } from './ui';
 import { hasSave } from './state';
+import { ROOMS, type RoomId } from './data';
 
 const canvas = document.getElementById('scene') as HTMLCanvasElement;
 
@@ -47,14 +51,8 @@ const pmrem = new THREE.PMREMGenerator(renderer);
 scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 scene.environmentIntensity = 0.25;
 
-const camera = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.1, 1000);
+const camera = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.1, 1200);
 const controls = new OrbitControls(camera, canvas);
-const BASE_TARGET = new THREE.Vector3(-0.2, 1.3, -0.2);
-// Moves toward the new deck as the room grows, so the whole (bigger) room stays centered.
-const TARGET = BASE_TARGET.clone();
-/** Multiplier on every framing distance; > 1 once the room has grown. */
-let roomScale = 1;
-controls.target.copy(TARGET);
 controls.enableDamping = true;
 controls.dampingFactor = 0.07;
 controls.enablePan = false;
@@ -65,39 +63,8 @@ controls.maxAzimuthAngle = 1.48;
 controls.rotateSpeed = 0.55;
 controls.zoomSpeed = 0.8;
 
-let homeDist = 28;
-function fit() {
-  const aspect = innerWidth / innerHeight;
-  camera.fov = aspect < 1 ? 42 : 30;
-  camera.aspect = aspect;
-  camera.updateProjectionMatrix();
-  const v = THREE.MathUtils.degToRad(camera.fov / 2);
-  const hh = Math.atan(Math.tan(v) * aspect);
-  homeDist = Math.max(6.7 / Math.tan(v), 7.8 / Math.tan(hh)) * roomScale;
-  controls.minDistance = homeDist * 0.42;
-  // On a narrow phone screen the horizontal field of view (hh) is much tighter
-  // than on a desktop window, even after widening fov above — so `homeDist * 1.4`
-  // alone leaves some room corners outside the frame no matter how far you zoom
-  // out or rotate. Guarantee the same absolute half-width/half-height coverage
-  // at max zoom-out that a typical desktop window already gets (reverse-engineered
-  // from the pre-existing 16:9-at-fov-30 case), on top of the old multiplier —
-  // this is a no-op on desktop aspects and only pushes narrow/mobile aspects out.
-  const farDist = Math.max(9.4 / Math.tan(v), 16.7 / Math.tan(hh)) * roomScale;
-  controls.maxDistance = Math.max(homeDist * 1.4, farDist);
-}
-fit();
-const homeView = () => {
-  const pos = new THREE.Vector3().setFromSphericalCoords(homeDist, 0.98, 0.78).add(TARGET);
-  return { pos, target: TARGET.clone() };
-};
-camera.position.copy(new THREE.Vector3().setFromSphericalCoords(homeDist * 2.3, 0.62, 0.15).add(TARGET));
-camera.lookAt(TARGET);
-
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
-// Strength/threshold tuned down from the original 0.6/0.82: at the old values bright
-// surfaces (the lamp, the moon) blew out to flat white blobs with no shape or color
-// left — this keeps a cozy glow on real highlights without erasing their detail.
 const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.46, 0.5, 0.88);
 composer.addPass(bloom);
 const rgbShift = new ShaderPass(RGBShiftShader);
@@ -113,38 +80,88 @@ const world = new World(scene);
 const sky = new Sky(scene);
 sky.camera = camera;
 const creature = new Creature(world);
+const shadow = new Shadow(world.root);
+const avatar = new Avatar(world.root);
 
-/** Grows the room to `levels` extended levels and reframes the camera around it.
- *  `animate` glides the camera to the new home view (used on level-up). */
-function setGrowth(levels: number, animate: boolean) {
-  world.setGrowth(levels);
-  const w = world.growth;
-  roomScale = 1 + (w / 10.3) * 0.8;
-  TARGET.copy(BASE_TARGET).add(new THREE.Vector3(w * 0.45, 0, w * 0.45));
+// ------------------------------------------------------------------ camera framing
+/** What the camera frames: a room, or the whole floating house (null). */
+let view: RoomId | null = null;
+const HOUSE_TARGET = new THREE.Vector3(12.5, 0.2, 2.6);
+const target = new THREE.Vector3();
+let homeDist = 28;
+
+function viewScale(id: RoomId | null) {
+  if (!id) return 2.7;
+  const r = world.rooms.get(id)!;
+  return Math.max(0.78, r.size / 10.3);
+}
+
+function viewTarget(id: RoomId | null, out = new THREE.Vector3()) {
+  if (!id) return out.copy(HOUSE_TARGET);
+  const r = world.rooms.get(id)!;
+  return out.copy(r.center).setY(r.floorY + 1.3);
+}
+
+function fit() {
+  const aspect = innerWidth / innerHeight;
+  camera.fov = aspect < 1 ? 42 : 30;
+  camera.aspect = aspect;
+  camera.updateProjectionMatrix();
+  const v = THREE.MathUtils.degToRad(camera.fov / 2);
+  const hh = Math.atan(Math.tan(v) * aspect);
+  const k = viewScale(view);
+  homeDist = Math.max(6.7 / Math.tan(v), 7.8 / Math.tan(hh)) * k;
+  controls.minDistance = homeDist * 0.42;
+  const farDist = Math.max(9.4 / Math.tan(v), 16.7 / Math.tan(hh)) * k;
+  controls.maxDistance = Math.max(homeDist * 1.4, farDist);
+}
+
+const viewPos = () => new THREE.Vector3().setFromSphericalCoords(homeDist, 0.98, 0.78).add(target);
+
+function focusRoom(id: RoomId | null, animate = true): Promise<void> {
+  view = id;
+  viewTarget(id, target);
   fit();
+  game.onFocus(id);
+  const pos = viewPos();
   if (!animate) {
-    controls.target.copy(TARGET);
-    return;
+    controls.target.copy(target);
+    camera.position.copy(pos);
+    camera.lookAt(target);
+    return Promise.resolve();
   }
-  const v = homeView();
   controls.enabled = false;
-  gsap.to(controls.target, { x: TARGET.x, y: TARGET.y, z: TARGET.z, duration: 2.4, ease: 'power2.inOut' });
-  gsap.to(camera.position, {
-    x: v.pos.x, y: v.pos.y, z: v.pos.z, duration: 2.4, ease: 'power2.inOut',
-    onUpdate: () => camera.lookAt(controls.target),
-    onComplete: () => { controls.enabled = true; },
+  // Lift the camera over the house on long hops so it doesn't skim through walls.
+  const far = camera.position.distanceTo(pos) > 18;
+  return new Promise((res) => {
+    gsap.killTweensOf(camera.position);
+    gsap.killTweensOf(controls.target);
+    gsap.to(controls.target, { x: target.x, y: target.y, z: target.z, duration: far ? 1.9 : 1.4, ease: 'power2.inOut' });
+    const tl = gsap.timeline({ onUpdate: () => camera.lookAt(controls.target), onComplete: () => { controls.enabled = true; res(); } });
+    tl.to(camera.position, { x: pos.x, z: pos.z, duration: far ? 1.9 : 1.4, ease: 'power2.inOut' }, 0);
+    if (far) tl.to(camera.position, { keyframes: [{ y: Math.max(camera.position.y, pos.y) + 6, duration: 0.95, ease: 'power2.out' }, { y: pos.y, duration: 0.95, ease: 'power2.in' }] }, 0);
+    else tl.to(camera.position, { y: pos.y, duration: 1.4, ease: 'power2.inOut' }, 0);
   });
 }
 
 const game = new Game({
-  world, sky, creature, camera, controls, rgbShift, homeView, setGrowth,
+  world, sky, creature, shadow, avatar, camera, controls, rgbShift, focusRoom,
   snapshot: () => {
     composer.render();
     return renderer.domElement.toDataURL('image/png');
   },
 });
 
-if (import.meta.env.DEV) (window as unknown as Record<string, unknown>).__lw = { game, world, creature, camera, controls, sky, gsap };
+// Start framed on the house; the intro flies into the saved room.
+view = null;
+viewTarget(null, target);
+fit();
+controls.target.copy(target);
+camera.position.copy(new THREE.Vector3().setFromSphericalCoords(homeDist * 1.7, 0.7, 0.2).add(target));
+camera.lookAt(target);
+world.setFocus(null, true);
+
+if (import.meta.env.DEV) (window as unknown as Record<string, unknown>).__lw = { game, world, creature, camera, controls, sky, gsap, shadow, avatar, focusRoom };
 
 // ------------------------------------------------------------------ picking
 const ray = new THREE.Raycaster();
@@ -153,7 +170,9 @@ const visible = (o: THREE.Object3D | null) => {
   for (let p = o; p; p = p.parent) if (!p.visible) return false;
   return true;
 };
-function pick(x: number, y: number): string | null {
+
+/** First interactive id under the pointer, plus the world point that was hit. */
+function pick(x: number, y: number): { id: string | null; point: THREE.Vector3 | null } {
   ndc.set((x / innerWidth) * 2 - 1, -(y / innerHeight) * 2 + 1);
   ray.setFromCamera(ndc, camera);
   const hits = ray.intersectObject(world.root, true);
@@ -162,9 +181,17 @@ function pick(x: number, y: number): string | null {
     if (o.userData.ignoreRay || o instanceof THREE.Sprite || o instanceof THREE.Points || o instanceof THREE.Line) continue;
     if (!visible(o)) continue;
     for (let p: THREE.Object3D | null = o; p; p = p.parent) {
-      if (p.userData.iid) return p.userData.iid as string;
+      if (p.userData.iid) return { id: p.userData.iid as string, point: hit.point };
     }
-    return null;
+    return { id: null, point: hit.point };
+  }
+  return { id: null, point: null };
+}
+
+function roomAt(p: THREE.Vector3): RoomId | null {
+  for (const r of ROOMS) {
+    const [x0, x1, z0, z1] = r.bounds;
+    if (p.x >= x0 - 0.2 && p.x <= x1 + 0.2 && p.z >= z0 - 0.2 && p.z <= z1 + 0.2 && p.y > r.floorY - 0.6) return r.id;
   }
   return null;
 }
@@ -181,8 +208,12 @@ canvas.addEventListener('pointerup', (e) => {
   if (!down || !started) return;
   const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
   if (moved < 8 && performance.now() - down.t < 700) {
-    const id = pick(e.clientX, e.clientY);
-    if (id) game.onClick(id);
+    const { id, point } = pick(e.clientX, e.clientY);
+    const room = point ? roomAt(point) : null;
+    if (view === null && room && (!id || world.zoneOf(id) === room)) game.onRoomClick(room);
+    else if (id) game.interact(id);
+    else if (view !== null && room && room !== view) game.onRoomClick(room);
+    else if (view !== null && room === view && point) game.walkTo(point);
     else game.onEmptyClick();
   }
   down = null;
@@ -222,20 +253,23 @@ document.getElementById('toolbar')!.addEventListener('click', (e) => {
   if (a === 'hint') game.showHint();
   else if (a === 'photo') game.takePhoto();
   else if (a === 'sound') game.toggleSound();
+  else if (a === 'daily') game.openDaily();
   else if (a === 'collection') game.openCollection();
+  else if (a === 'shop') game.openShop();
   else if (a === 'menu') game.openMenu();
 });
 for (const b of document.querySelectorAll<HTMLButtonElement>('#toolbar button')) {
-  b.innerHTML = icon(b.dataset.icon!, 22);
+  if (b.dataset.action !== 'sound') b.innerHTML = icon(b.dataset.icon!, 22);
 }
 document.querySelector('#sticky .x')?.addEventListener('click', () => {
   game.dismissNote();
   gsap.to('#sticky', { rotate: 20, y: 200, opacity: 0, duration: 0.5, ease: 'power2.in', onComplete: () => document.getElementById('sticky')?.remove() });
 });
+document.getElementById('player')?.addEventListener('click', () => { sound.click(); game.openCollection(); });
 
 // ------------------------------------------------------------------ start
 const startBtn = document.getElementById('start-btn') as HTMLButtonElement;
-if (hasSave() && game.s.stage > 0) startBtn.textContent = 'Үргэлжлүүлэх';
+if (hasSave()) startBtn.textContent = 'Үргэлжлүүлэх';
 const fontsReady = Promise.race([
   Promise.all([
     document.fonts.load('700 40px Caveat'),
@@ -257,24 +291,24 @@ startBtn.addEventListener('click', () => {
   gsap.to('#start', { opacity: 0, duration: 0.8, onComplete: () => document.getElementById('start')!.remove() });
   const hud = document.getElementById('hud')!;
   hud.hidden = false;
-  gsap.from('#hud .brand, #hud .quest, #hud .counter', { y: -30, opacity: 0, duration: 0.8, stagger: 0.1, delay: 1.6, ease: 'back.out(2)' });
+  gsap.from('#hud .brand, #hud .quest, #hud .player', { y: -30, opacity: 0, duration: 0.8, stagger: 0.1, delay: 1.6, ease: 'back.out(2)' });
+  gsap.from('#hud .rooms', { x: 60, opacity: 0, duration: 0.8, delay: 2.0, ease: 'back.out(2)' });
   gsap.from('#hud .toolbar', { y: 60, opacity: 0, duration: 0.8, delay: 2, ease: 'back.out(2)' });
   gsap.from('#sticky', { x: -120, rotate: -20, opacity: 0, duration: 0.8, delay: 2.4, ease: 'back.out(2)' });
-  const v = homeView();
+  // Glide over the whole house first, then into the room you were last in.
+  const first = game.s.focus ?? 'bedroom';
+  viewTarget(null, target);
+  fit();
   controls.enabled = false;
+  const hp = viewPos();
   gsap.to(camera.position, {
-    x: v.pos.x, y: v.pos.y, z: v.pos.z, duration: 3.2, ease: 'power3.inOut',
+    x: hp.x, y: hp.y, z: hp.z, duration: 2.6, ease: 'power3.inOut',
     onUpdate: () => camera.lookAt(controls.target),
     onComplete: () => {
-      controls.enabled = true;
-      started = true;
-      if (game.s.stage === 0 && game.s.seen.length === 0) {
-        setTimeout(() => ui.toast('Өрөөнд 4 үсэг нуугдсан байна. Гэрэлтэж буй цэгүүд дээр дараад үз!', 5500), 600);
-      } else {
-        // Brand-new players get the toast above instead — the daily reward is
-        // for people who've already been here before.
-        game.checkDailyReward();
-      }
+      void focusRoom(game.s.rooms[first]?.unlocked ? first : 'bedroom').then(() => {
+        started = true;
+        game.startSession();
+      });
     },
   });
 });
@@ -282,8 +316,6 @@ startBtn.addEventListener('click', () => {
 // ------------------------------------------------------------------ loop
 let resizeRaf = 0;
 addEventListener('resize', () => {
-  // Mobile browsers fire a burst of resize events while the address bar
-  // slides away or the screen rotates; coalesce them to one per frame.
   if (resizeRaf) return;
   resizeRaf = requestAnimationFrame(() => {
     resizeRaf = 0;
@@ -300,7 +332,7 @@ function frame() {
   const dt = Math.min(clock.getDelta(), 0.05);
   t += dt;
   if (!started && controls.enabled) {
-    camera.position.applyAxisAngle(new THREE.Vector3(0, 1, 0), dt * 0.04);
+    camera.position.sub(controls.target).applyAxisAngle(new THREE.Vector3(0, 1, 0), dt * 0.04).add(controls.target);
     camera.lookAt(controls.target);
   } else {
     controls.update();
@@ -308,9 +340,10 @@ function frame() {
   world.update(dt, t);
   sky.update(dt, t);
   creature.update(dt);
+  avatar.update(dt, t);
   game.update(dt, t);
 
-  if (started && pointer && !ui.modalOpen && !game.busy) setHover(pick(pointer.x, pointer.y));
+  if (started && pointer && !ui.modalOpen && !game.busy) setHover(pick(pointer.x, pointer.y).id);
   else if (hoverId) setHover(null);
   const name = started && pointer && hoverId ? game.hoverName(hoverId) : null;
   ui.tooltip(name, pointer?.x, pointer?.y);

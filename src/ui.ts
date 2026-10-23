@@ -1,6 +1,6 @@
 import gsap from 'gsap';
 import { h } from './util';
-import type { CardColor, LevelDef, Shape } from './data';
+import type { CardColor, Shape } from './data';
 
 export const ICONS: Record<string, string> = {
   box: '<path d="M3 8l9-5 9 5v8l-9 5-9-5z"/><path d="M3 8l9 5 9-5M12 13v8"/>',
@@ -27,6 +27,30 @@ export const ICONS: Record<string, string> = {
   more: '<circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>',
   lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/>',
+  bed: '<path d="M3 18V7M3 13h18v5M21 18v-3a3 3 0 00-3-3H10v1"/><circle cx="7" cy="10.5" r="1.8"/>',
+  door: '<path d="M6 21V4a1 1 0 011-1h10a1 1 0 011 1v17M4 21h16"/><circle cx="14.5" cy="12" r="1"/>',
+  tv: '<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M8 3l4 3 4-3M8 21h8"/>',
+  fire: '<path d="M12 21c4 0 7-3 7-7 0-5-5-7-5-11-3 2-4 5-4 7-1-1-2-2-2-4-2 2-3 5-3 8 0 4 3 7 7 7z"/>',
+  sofa: '<path d="M4 11V8a3 3 0 013-3h10a3 3 0 013 3v3M2 13a2 2 0 014 0v2h12v-2a2 2 0 014 0v5H2zM5 18v2M19 18v2"/>',
+  pot: '<path d="M4 10h16v6a4 4 0 01-4 4H8a4 4 0 01-4-4zM2 10h20M9 6c0-1 1-2 1-3M14 6c0-1 1-2 1-3"/>',
+  fridge: '<rect x="5" y="2" width="14" height="20" rx="2"/><path d="M5 10h14M8 5v2M8 13v3"/>',
+  drop: '<path d="M12 3s6 7 6 11a6 6 0 01-12 0c0-4 6-11 6-11z"/>',
+  bath: '<path d="M3 12h18v3a5 5 0 01-5 5H8a5 5 0 01-5-5zM6 12V5a2 2 0 014 0M7 20l-1 2M17 20l1 2"/>',
+  mirror: '<ellipse cx="12" cy="10" rx="6" ry="8"/><path d="M12 18v4M8 22h8M9 7l3-2"/>',
+  washer: '<rect x="4" y="2" width="16" height="20" rx="2"/><circle cx="12" cy="13" r="5"/><path d="M7 5h2"/>',
+  telescope: '<path d="M4 14l12-6 2 4-12 6zM16 8l3-1 1 3-2 2M9 17l-3 5M11 16l3 6"/>',
+  map: '<path d="M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3z"/><path d="M9 3v15M15 6v15"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/>',
+  tree: '<path d="M12 22v-6M7 16a5 5 0 01-1-9 6 6 0 0112-1 5 5 0 01-1 10z"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/>',
+  heart: '<path d="M12 20s-7-4.5-7-10a4 4 0 017-2.6A4 4 0 0119 10c0 5.5-7 10-7 10z"/>',
+  duck: '<path d="M4 14c0 4 3 6 8 6s8-2 8-6c-2 1-4 1-6 0 2-2 2-6-1-7-3-1-5 2-4 5-2 0-4 0-5 2z"/><path d="M17 8l3 1-3 1"/>',
+  jar: '<path d="M7 4h10v3H7zM6 7h12v11a3 3 0 01-3 3H9a3 3 0 01-3-3z"/>',
+  bag: '<path d="M5 8h14l-1 13H6zM9 8V6a3 3 0 016 0v2"/>',
+  calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+  home: '<path d="M3 11l9-8 9 8M5 9v12h14V9"/><path d="M10 21v-6h4v6"/>',
+  eye: '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  badge: '<circle cx="12" cy="9" r="6"/><path d="M8.5 14L7 22l5-3 5 3-1.5-8"/>',
 };
 
 export const icon = (name: string, size = 20) =>
@@ -46,6 +70,19 @@ const SHAPE_SVG: Record<Shape, string> = {
   hourglass: '<path d="M12 6h24M12 42h24M14 6c0 10 10 12 10 18s-10 8-10 18M34 6c0 10-10 12-10 18s10 8 10 18" stroke="currentColor" stroke-width="3" fill="none"/><path d="M17 38c3-5 11-5 14 0z"/>',
   crown: '<path d="M6 36l4-22 10 10 4-14 4 14 10-10 4 22z"/><rect x="6" y="36" width="36" height="5" rx="1"/>',
   tesseract: '<rect x="8" y="8" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.5"/><rect x="16" y="15" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.5" opacity=".7"/><path d="M8 8l8 7M34 8l6 7M8 34l8 5M34 34l6 5" stroke="currentColor" stroke-width="2.5"/>',
+  teddy: '<circle cx="14" cy="12" r="6"/><circle cx="34" cy="12" r="6"/><circle cx="24" cy="20" r="11"/><ellipse cx="24" cy="36" rx="12" ry="10"/><circle cx="20" cy="18" r="1.6" fill="#1a1433"/><circle cx="28" cy="18" r="1.6" fill="#1a1433"/><ellipse cx="24" cy="24" rx="4" ry="3" fill="#f4dcc0"/>',
+  jar: '<rect x="15" y="6" width="18" height="6" rx="2" opacity=".7"/><path d="M12 14h24v24a6 6 0 01-6 6H18a6 6 0 01-6-6z" opacity=".55"/><circle cx="22" cy="28" r="3" fill="#fff"/><circle cx="29" cy="22" r="2" fill="#fff"/><circle cx="27" cy="34" r="1.6" fill="#fff"/>',
+  remote: '<rect x="16" y="4" width="16" height="40" rx="6"/><circle cx="24" cy="12" r="3" fill="#ff5f7a"/><rect x="20" y="20" width="3" height="3" fill="#1a1433"/><rect x="25" y="20" width="3" height="3" fill="#1a1433"/><rect x="20" y="26" width="3" height="3" fill="#1a1433"/><rect x="25" y="26" width="3" height="3" fill="#1a1433"/>',
+  vinyl: '<circle cx="24" cy="24" r="19" fill="#1a1433"/><circle cx="24" cy="24" r="15" fill="none" stroke="#3a3260" stroke-width="1.5"/><circle cx="24" cy="24" r="8"/><circle cx="24" cy="24" r="2" fill="#1a1433"/>',
+  cookie: '<circle cx="24" cy="24" r="18"/><circle cx="17" cy="18" r="3" fill="#4a2c1a"/><circle cx="29" cy="16" r="2.5" fill="#4a2c1a"/><circle cx="30" cy="29" r="3" fill="#4a2c1a"/><circle cx="19" cy="31" r="2.5" fill="#4a2c1a"/>',
+  egg: '<path d="M24 5c8 0 14 13 14 23a14 14 0 01-28 0C10 18 16 5 24 5z"/><path d="M18 16c2-4 5-6 7-6" stroke="#fff" stroke-width="3" fill="none" opacity=".6"/>',
+  spoon: '<ellipse cx="24" cy="13" rx="8" ry="10"/><rect x="22" y="21" width="4" height="23" rx="2"/>',
+  soap: '<rect x="8" y="18" width="32" height="18" rx="8"/><circle cx="16" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="26" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="34" cy="13" r="2.5" fill="none" stroke="currentColor" stroke-width="2"/>',
+  shell: '<path d="M24 40L6 22a18 14 0 0136 0z"/><path d="M24 40L14 14M24 40V10M24 40l10-26" stroke="#fff" stroke-width="1.8" opacity=".55"/>',
+  bubble: '<circle cx="24" cy="24" r="17" opacity=".45"/><circle cx="24" cy="24" r="17" fill="none" stroke="currentColor" stroke-width="2.5"/><path d="M15 17a10 10 0 018-5" stroke="#fff" stroke-width="3" fill="none"/>',
+  compass: '<circle cx="24" cy="24" r="18"/><circle cx="24" cy="24" r="14" fill="#1a1433"/><path d="M24 12l4 12-4 12-4-12z" fill="#ff5f7a"/><path d="M24 24l4 0-4 12-4-12z" fill="#fff"/>',
+  map: '<path d="M6 10l11-4 14 4 11-4v32l-11 4-14-4-11 4z"/><path d="M14 18l5 6 7-3 6 7" stroke="#1a1433" stroke-width="2" fill="none" stroke-dasharray="3 2"/><circle cx="32" cy="28" r="2.5" fill="#ff5f7a"/>',
+  star: '<path d="M24 4l6 13 14 2-10 10 2 14-12-7-12 7 2-14L4 19l14-2z"/>',
 };
 
 export const shapeSvg = (shape: Shape, color: string, size = 56) =>
@@ -79,40 +116,101 @@ class UI {
 
   get modalOpen() { return this.current !== null; }
 
-  setQuest(step: number, total: number, title: string, sub: string, slots: number, letters: string[], level?: LevelDef, done = false) {
+  setQuest(q: { room: string; tag: string; title: string; sub: string; slots: number; letters: string[]; done: boolean; inventory: string[] }) {
     const stepEl = $('quest-step');
-    stepEl.textContent = done ? '✓ ДУУССАН' : `${Math.min(step, total)}/${total}`;
-    stepEl.classList.toggle('done', done);
-    $('quest').classList.toggle('done', done);
+    stepEl.textContent = q.done ? '✓ ДУУССАН' : q.room;
+    stepEl.classList.toggle('done', q.done);
+    $('quest').classList.toggle('done', q.done);
     const lvlEl = $('quest-level');
-    lvlEl.textContent = level ? `LVL ${level.code} · ${level.tag.toUpperCase()}` : '';
-    lvlEl.title = level?.name ?? '';
-    lvlEl.dataset.tag = level?.tag.toLowerCase() ?? '';
-    $('quest-title').textContent = title;
-    $('quest-sub').textContent = sub;
+    lvlEl.textContent = q.tag ? q.tag.toUpperCase() : '';
+    lvlEl.dataset.tag = q.tag.toLowerCase();
+    lvlEl.hidden = !q.tag;
+    $('quest-title').textContent = q.title;
+    $('quest-sub').textContent = q.sub;
     const tray = $('tray');
     tray.replaceChildren();
-    tray.hidden = slots === 0;
-    tray.classList.toggle('many', slots > 6);
-    const prev = title === this.lastQuest ? this.lastFilled : 0;
-    for (let i = 0; i < slots; i++) {
-      const s = h('span', { class: 'slot' + (letters[i] ? ' filled' : '') + (letters[i] && i >= prev ? ' pop' : '') }, letters[i] ?? '');
-      tray.append(s);
+    tray.hidden = q.slots === 0;
+    tray.classList.toggle('many', q.slots > 6);
+    const key = q.room + q.title;
+    const prev = key === this.lastQuest ? this.lastFilled : 0;
+    for (let i = 0; i < q.slots; i++) {
+      const sl = h('span', { class: 'slot' + (q.letters[i] ? ' filled' : '') + (q.letters[i] && i >= prev ? ' pop' : '') }, q.letters[i] ?? '');
+      tray.append(sl);
     }
-    if (title !== this.lastQuest) gsap.fromTo('#quest', { scale: 0.94 }, { scale: 1, duration: 0.5, ease: 'back.out(3)' });
-    this.lastQuest = title;
-    this.lastFilled = letters.length;
+    const inv = $('inventory');
+    inv.replaceChildren(...q.inventory.map((t) => h('span', { class: 'inv-chip' }, t)));
+    inv.hidden = q.inventory.length === 0;
+    if (key !== this.lastQuest) gsap.fromTo('#quest', { scale: 0.94 }, { scale: 1, duration: 0.5, ease: 'back.out(3)' });
+    this.lastQuest = key;
+    this.lastFilled = q.letters.filter(Boolean).length;
+  }
+
+  /** Top-right player card: level ring, title, XP bar, coins, streak. */
+  setPlayer(p: { level: number; title: string; xpInto: number; xpNeed: number; coins: number; streak: number; daily: number }) {
+    $('pc-level').textContent = String(p.level);
+    $('pc-title').textContent = p.title;
+    $('pc-xp').style.width = `${Math.min(100, (p.xpInto / Math.max(1, p.xpNeed)) * 100)}%`;
+    $('pc-xptext').textContent = `${p.xpInto} / ${p.xpNeed} XP`;
+    $('pc-coins').textContent = String(p.coins);
+    $('pc-streak').textContent = String(p.streak);
+    document.querySelector('[data-action="daily"]')?.classList.toggle('ping', p.daily > 0);
+  }
+
+  /** Floating "+XP / +coins" pill under the player card. */
+  gain(xp: number, coins: number, label?: string) {
+    const parts = [label ?? '', xp ? `+${xp} XP` : '', coins ? `${coins > 0 ? '+' : ''}${coins} ✦` : ''].filter(Boolean);
+    const el = h('div', { class: 'gain' }, parts.join(' · '));
+    $('gains').append(el);
+    gsap.fromTo(el, { y: 12, opacity: 0, scale: 0.8 }, { y: 0, opacity: 1, scale: 1, duration: 0.35, ease: 'back.out(2)' });
+    gsap.to(el, { y: -16, opacity: 0, delay: 2.2, duration: 0.4, onComplete: () => el.remove() });
+    gsap.fromTo('#player', { scale: 1.05 }, { scale: 1, duration: 0.5, ease: 'back.out(3)' });
+  }
+
+  levelUp(level: number, title: string, bonus: number, newTitle: boolean) {
+    const el = h('div', { class: 'levelup' });
+    el.append(h('small', {}, 'ТҮВШИН АХИЛАА'), h('b', {}, String(level)), h('span', {}, newTitle ? `Шинэ цол: ${title}` : title), h('em', {}, `+${bonus} ✦`));
+    document.body.append(el);
+    gsap.timeline({ onComplete: () => el.remove() })
+      .fromTo(el, { scale: 0.4, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.6, ease: 'back.out(2.2)' })
+      .to(el, { opacity: 0, y: -40, duration: 0.5, delay: 2.2 });
+    this.flash('#ffd36b', 0.35);
+  }
+
+  /** Danger meter (0..1) shown while the Shadow is coming. */
+  danger(k: number, label = '') {
+    const el = $('danger');
+    el.hidden = k <= 0;
+    document.body.classList.toggle('dread', k > 0);
+    if (k <= 0) return;
+    $('danger-fill').style.width = `${k * 100}%`;
+    $('danger-label').textContent = label;
+    el.classList.toggle('hot', k > 0.85);
+  }
+
+  jumpscare(on: boolean) {
+    document.body.classList.toggle('scared', on);
+  }
+
+  /** Room picker on the right: one chip per room. */
+  setRooms(rooms: { id: string; name: string; icon: string; locked: boolean; done: boolean; active: boolean; danger: boolean }[], houseActive: boolean, onPick: (id: string | null) => void) {
+    const nav = $('rooms');
+    nav.replaceChildren();
+    const house = h('button', { class: `room-chip${houseActive ? ' active' : ''}`, title: 'Бүх байшин' });
+    house.innerHTML = `${icon('home', 18)}<span>Байшин</span>`;
+    house.addEventListener('click', () => onPick(null));
+    nav.append(house);
+    for (const r of rooms) {
+      const b = h('button', { class: `room-chip${r.active ? ' active' : ''}${r.locked ? ' locked' : ''}${r.done ? ' done' : ''}${r.danger ? ' danger' : ''}`, title: r.name });
+      b.innerHTML = `${icon(r.locked ? 'lock' : r.icon, 18)}<span></span>${r.done ? '<i>✓</i>' : ''}`;
+      (b.querySelector('span') as HTMLElement).textContent = r.name;
+      b.addEventListener('click', () => onPick(r.id));
+      nav.append(b);
+    }
   }
 
   nextSlotRect(): DOMRect | null {
     const el = document.querySelector('#tray .slot:not(.filled)');
     return el ? el.getBoundingClientRect() : null;
-  }
-
-  setCounter(n: number, total: number) {
-    $('counter-n').textContent = String(n);
-    $('counter-t').textContent = String(total);
-    gsap.fromTo('#counter', { scale: 1.15 }, { scale: 1, duration: 0.5, ease: 'back.out(3)' });
   }
 
   flyLetter(letter: string, x: number, y: number): Promise<void> {
@@ -138,10 +236,10 @@ class UI {
     gsap.to(el, { y: -10, opacity: 0, delay: ms / 1000, duration: 0.3, onComplete: () => el.remove() });
   }
 
-  achievement(title: string, desc: string) {
-    const el = h('div', { class: 'ach' });
-    el.innerHTML = `<div class="ach-icon">${icon('trophy', 22)}</div>`;
-    el.append(h('div', { class: 'ach-text' }, h('small', {}, 'Амжилт нээгдлээ!'), h('b', {}, title), h('span', {}, desc)));
+  achievement(title: string, desc: string, emoji = '🏆', tier = 0) {
+    const el = h('div', { class: `ach tier-${tier}` });
+    el.append(h('div', { class: 'ach-icon' }, emoji));
+    el.append(h('div', { class: 'ach-text' }, h('small', {}, tier ? 'Тэмдэг ахилаа!' : 'Тэмдэг нээгдлээ!'), h('b', {}, title), h('span', {}, desc)));
     $('ach-stack').append(el);
     gsap.fromTo(el, { x: 80, opacity: 0, scale: 0.8 }, { x: 0, opacity: 1, scale: 1, duration: 0.5, ease: 'back.out(2)' });
     gsap.to(el, { x: 80, opacity: 0, delay: 4.2, duration: 0.35, onComplete: () => el.remove() });

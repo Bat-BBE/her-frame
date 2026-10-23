@@ -139,6 +139,59 @@ class Sound {
     this.noise(1.2, 0.08, 6000, 12000, 'highpass');
   }
 
+  // ---------------------------------------------------------------- house
+  coin() { this.tone(1320, 0.08, 'square', 0.05); this.tone(1760, 0.18, 'square', 0.05, 0.07); }
+  levelUp() {
+    [523.25, 659.25, 783.99, 1046.5, 1318.5].forEach((f, i) => this.tone(f, 0.35, 'triangle', 0.1, i * 0.07));
+    this.tone(2093, 1.0, 'sine', 0.06, 0.4);
+  }
+  unlock() { this.tone(300, 0.06, 'square', 0.08); this.tone(900, 0.12, 'triangle', 0.12, 0.08); this.tone(1400, 0.3, 'sine', 0.08, 0.16); }
+  creak() { this.tone(110, 1.1, 'sawtooth', 0.03, 0, 160); this.noise(1.0, 0.05, 600, 300); }
+  splash() { this.noise(0.8, 0.22, 2500, 600); }
+  sizzle() { this.noise(1.4, 0.12, 6000, 3000, 'highpass'); }
+  ring() { for (let i = 0; i < 6; i++) this.tone(i % 2 ? 1760 : 1568, 0.07, 'square', 0.05, i * 0.08); }
+  /** Four record-player notes (the melody puzzle). */
+  note(i: number) { const f = [392, 493.88, 587.33, 739.99][i % 4]; this.tone(f, 0.45, 'triangle', 0.14); this.tone(f * 2, 0.3, 'sine', 0.04); }
+
+  // ---------------------------------------------------------------- the Shadow
+  footstep(vol = 0.3) {
+    const ctx = this.ctx;
+    if (!ctx || !this.sfx) return;
+    this.tone(70, 0.18, 'sine', vol * 0.9, 0, 40);
+    this.noise(0.12, vol * 0.25, 400, 120, 'lowpass');
+  }
+  heartbeat(vol = 0.3) {
+    this.tone(55, 0.14, 'sine', vol, 0, 40);
+    this.tone(50, 0.16, 'sine', vol * 0.8, 0.2, 38);
+  }
+  whisper() { this.noise(1.6, 0.06, 3000, 1200); this.tone(180, 1.4, 'sawtooth', 0.012, 0, 120); }
+  scream() {
+    this.noise(1.1, 0.5, 4000, 300);
+    this.tone(880, 0.9, 'sawtooth', 0.12, 0, 220);
+    this.tone(1244, 0.8, 'square', 0.06, 0.02, 300);
+    this.tone(60, 1.2, 'sawtooth', 0.12, 0, 30);
+  }
+  /** 0 = calm, 1 = the Shadow is right here. Darkens the music. */
+  setDread(k: number) {
+    if (!this.ctx || !this.music) return;
+    this.music.gain.setTargetAtTime(0.16 * (1 - k * 0.8), this.ctx.currentTime, 0.4);
+    if (k > 0.3 && !this.drone) {
+      const o = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      o.type = 'sawtooth';
+      o.frequency.value = 46;
+      const f = this.ctx.createBiquadFilter();
+      f.type = 'lowpass';
+      f.frequency.value = 180;
+      g.gain.value = 0;
+      o.connect(f).connect(g).connect(this.master!);
+      o.start();
+      this.drone = { o, g };
+    }
+    if (this.drone) this.drone.g.gain.setTargetAtTime(k * 0.07, this.ctx.currentTime, 0.5);
+  }
+  private drone?: { o: OscillatorNode; g: GainNode };
+
   startMusic() {
     if (!this.ctx || this.padTimer) return;
     const play = () => this.playChord();

@@ -78,6 +78,7 @@ export class Sky {
   private showerTimer = 0;
   moon: THREE.Mesh;
   camera?: THREE.Camera;
+  private bgMat: THREE.ShaderMaterial;
 
   constructor(scene: THREE.Scene) {
     scene.add(this.group);
@@ -91,6 +92,7 @@ export class Sky {
         void main(){ float h = vP.y; vec3 c = h > 0.0 ? mix(uMid, uTop, smoothstep(0.0, 0.8, h)) : mix(uMid, uBottom, smoothstep(0.0, -0.6, h));
         gl_FragColor = vec4(c, 1.0); }`,
     });
+    this.bgMat = bgMat;
     const bg = new THREE.Mesh(new THREE.SphereGeometry(400, 32, 16), bgMat);
     bg.renderOrder = -10;
     this.group.add(bg);
@@ -141,7 +143,7 @@ export class Sky {
       new THREE.SphereGeometry(5, 32, 16),
       new THREE.MeshBasicMaterial({ color: new THREE.Color('#fff4d6').multiplyScalar(1.1) }),
     );
-    this.moon.position.set(-60, -16, -42);
+    this.moon.position.set(-150, 8, -170);
     this.group.add(this.moon);
     const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: nebTex, color: '#ffe9b0', transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false }));
     halo.scale.setScalar(22);
@@ -198,6 +200,21 @@ export class Sky {
   get auroraAmount() { return this.auroraMat.uniforms.uAmt.value; }
   set starBrightness(v: number) { this.starMat.uniforms.uBright.value = v; }
   get starBrightness() { return this.starMat.uniforms.uBright.value; }
+
+  /** Real-world time of day: recolours the sky gradient and dims stars in daylight. */
+  setPhase(phase: 'dawn' | 'day' | 'dusk' | 'night') {
+    const P = {
+      night: ['#2a1d5c', '#15102e', '#07060f', 1],
+      dawn: ['#4a3488', '#b8668e', '#22143a', 0.55],
+      day: ['#3f6fcf', '#8fb0ec', '#22305e', 0.18],
+      dusk: ['#33256e', '#d27a68', '#200c26', 0.6],
+    }[phase] as [string, string, string, number];
+    const u = this.bgMat.uniforms;
+    (u.uTop.value as THREE.Color).set(P[0]);
+    (u.uMid.value as THREE.Color).set(P[1]);
+    (u.uBottom.value as THREE.Color).set(P[2]);
+    if (this.auroraAmount < 0.5) this.starBrightness = P[3];
+  }
 
   meteorShower(count = 14) {
     this.showerLeft += count;

@@ -1,35 +1,60 @@
 import * as THREE from 'three';
+import gsap from 'gsap';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { canvasTex, std, glow, mesh, hash3, rand, drawGlyph, letterTexture } from './util';
+import { canvasTex, std, glow, mesh, rand, drawGlyph, letterTexture } from './util';
 import { Tesseract } from './sky';
-import { GLYPH_WALL, EXT_LEVELS, propStart } from './data';
-
-export type PropType = 'lantern' | 'crate' | 'crystal' | 'statue' | 'chest' | 'orb' | 'tree';
-const PROP_TYPES: PropType[] = ['lantern', 'crate', 'crystal', 'statue', 'chest', 'orb', 'tree'];
-const PROP_COLS = ['#ff7eb6', '#7df9ff', '#ffd36b', '#b388ff', '#7ed957', '#ff9a5c'];
-/** World units the deck grows outward per extended level. */
-export const GROW_STEP = 1.25;
+import { GLYPH_WALL, ROOMS, PAINTS, type RoomId, type ZoneId, type PaintId, type LightsMode } from './data';
+import { buildHouse, type HouseRefs } from './rooms/house';
+import { buildBedroom, type BedroomRefs } from './rooms/bedroom';
+import { buildLiving, type LivingRefs } from './rooms/living';
+import { buildKitchen, type KitchenRefs } from './rooms/kitchen';
+import { buildBath, type BathRefs } from './rooms/bath';
+import { buildObservatory, type ObservatoryRefs } from './rooms/observatory';
+import { buildGarden, type GardenRefs } from './rooms/garden';
 
 const WALL_H = 5;
 const RAIL_Y = 1.4;
+/** Height interior walls drop to when they would block the view of the focused room. */
+export const CUT_H = 0.7;
 
-export type ThemeName = 'default' | 'mint' | 'sunset' | 'galaxy';
-
-export interface ThemeDef {
-  label: string;
-  wall: string;
-  wallLow: string;
-  neon: string;
-  /** Number of unique collected reward types needed to unlock this theme (REWARDS.length = 13). */
-  unlockAt: number;
+export interface RoomRuntime {
+  id: RoomId;
+  x0: number;
+  x1: number;
+  z0: number;
+  z1: number;
+  floorY: number;
+  center: THREE.Vector3;
+  /** Largest floor dimension — drives camera framing. */
+  size: number;
+  /** Everything inside the room (hidden while the room is locked). */
+  group: THREE.Group;
+  wall: THREE.MeshStandardMaterial;
+  wallLow: THREE.MeshStandardMaterial;
+  lights: THREE.PointLight[];
+  /** Floating padlock hologram shown while locked. */
+  lock: THREE.Group;
+  /** Where Mochi sits when it follows you into this room. */
+  mochiSpot: THREE.Vector3;
+  locked: boolean;
 }
 
-export const ROOM_THEMES: Record<ThemeName, ThemeDef> = {
-  default: { label: 'Анхдагч (Violet)', wall: '#4d3c83', wallLow: '#3a2d68', neon: '#5ab8ff', unlockAt: 0 },
-  mint: { label: 'Mint', wall: '#2f6b5e', wallLow: '#234f46', neon: '#7df9ff', unlockAt: 4 },
-  sunset: { label: 'Sunset', wall: '#7a3a4d', wallLow: '#5c2a3a', neon: '#ff9a5c', unlockAt: 8 },
-  galaxy: { label: 'Galaxy', wall: '#2a1f55', wallLow: '#1c1540', neon: '#b388ff', unlockAt: 13 },
-};
+export interface CutWall {
+  group: THREE.Group;
+  axis: 'x' | 'z';
+  at: number;
+  doors: THREE.Object3D[];
+  cut: boolean;
+}
+
+export interface DoorRuntime {
+  id: string;
+  leaf: THREE.Object3D;
+  closed: number;
+  opened: number;
+  open: boolean;
+  padlock: THREE.Object3D;
+}
 
 export interface LightSet {
   hemi: THREE.HemisphereLight;
@@ -87,24 +112,35 @@ export class World {
   alcove!: THREE.Group;
   windowGroup!: THREE.Group;
   rocks: THREE.Mesh[] = [];
-  private flames: THREE.Mesh[] = [];
-  private floorTop!: THREE.MeshStandardMaterial;
-  private floorSide!: THREE.MeshStandardMaterial;
-  private floorTex!: THREE.Texture;
-  private annex = new THREE.Group();
-  private annexDisposables: { dispose(): void }[] = [];
-  private spinners: THREE.Object3D[] = [];
-  /** Extra deck width (world units) beyond the original 10.3×10.3 floor. */
-  growth = 0;
-  private growthLevels = 0;
-  /** prop id → type, for every object that appeared through room growth. */
-  readonly propTypes = new Map<string, PropType>();
+  readonly flames: THREE.Mesh[] = [];
+  readonly spinners: THREE.Object3D[] = [];
   trophyRing = new THREE.Group();
+  readonly rooms = new Map<RoomId, RoomRuntime>();
+  readonly cutWalls: CutWall[] = [];
+  /** Things hung on an interior wall: hidden while that wall is cut down. */
+  private mounts: { obj: THREE.Object3D; axis: 'x' | 'z'; at: number }[] = [];
+  readonly doors = new Map<string, DoorRuntime>();
+  readonly garden = new THREE.Group();
+  /** Builder target: objects added by the room builders go into this zone's group. */
+  currentZone: ZoneId = 'study';
+  room!: THREE.Group;
+  /** Per-frame callbacks registered by the room builders (flames, steam, fish...). */
+  readonly updaters: ((dt: number, t: number) => void)[] = [];
+  house!: HouseRefs;
+  bedroom!: BedroomRefs;
+  living!: LivingRefs;
+  kitchen!: KitchenRefs;
+  bath!: BathRefs;
+  observatory!: ObservatoryRefs;
+  gardenRefs!: GardenRefs;
+  lightsMode: LightsMode = 'warm';
+  /** Last focus passed to setFocus (null = whole house). */
+  focus: RoomId | null = null;
   private dust!: THREE.Points;
   private dustMat!: THREE.ShaderMaterial;
   private hotspotTex: THREE.Texture;
 
-  private mats = {
+  readonly mats = {
     wall: std('#4d3c83', { roughness: 0.95 }),
     wallLow: std('#3a2d68', { roughness: 0.95 }),
     trim: std('#7c66c9', { roughness: 0.6 }),
@@ -120,7 +156,29 @@ export class World {
   constructor(scene: THREE.Scene) {
     scene.add(this.root);
     this.hotspotTex = this.makeHotspotTex();
-    this.buildIsland();
+    this.root.add(this.garden);
+    for (const def of ROOMS) {
+      const group = new THREE.Group();
+      this.root.add(group);
+      const isStudy = def.id === 'study';
+      const p = PAINTS[def.paint];
+      const [x0, x1, z0, z1] = def.bounds;
+      this.rooms.set(def.id, {
+        id: def.id, x0, x1, z0, z1, floorY: def.floorY,
+        center: new THREE.Vector3((x0 + x1) / 2, def.floorY, (z0 + z1) / 2),
+        size: Math.max(x1 - x0, z1 - z0),
+        group,
+        wall: isStudy ? this.mats.wall : std(p.wall, { roughness: 0.95 }),
+        wallLow: isStudy ? this.mats.wallLow : std(p.wallLow, { roughness: 0.95 }),
+        lights: [],
+        lock: new THREE.Group(),
+        mochiSpot: new THREE.Vector3((x0 + x1) / 2, def.floorY, (z0 + z1) / 2),
+        locked: false,
+      });
+    }
+
+    // The original room — now the study — keeps its hand-built layout.
+    this.useZone('study');
     this.buildWalls();
     this.buildWindow();
     this.buildDesk();
@@ -137,14 +195,48 @@ export class World {
     this.buildDecor();
     this.buildStringLights();
     this.buildAlcove();
+    this.rooms.get('study')!.mochiSpot.set(-3.0, 0.78, 3.35);
+
+    this.house = buildHouse(this);
+    this.useZone('bedroom');
+    this.bedroom = buildBedroom(this);
+    this.useZone('living');
+    this.living = buildLiving(this);
+    this.useZone('kitchen');
+    this.kitchen = buildKitchen(this);
+    this.useZone('bath');
+    this.bath = buildBath(this);
+    this.useZone('observatory');
+    this.observatory = buildObservatory(this);
+    this.useZone('garden');
+    this.gardenRefs = buildGarden(this);
+
     this.buildDust();
     this.buildLights();
     this.root.add(this.trophyRing);
-    this.root.add(this.annex);
+  }
+
+  useZone(z: ZoneId) {
+    this.currentZone = z;
+    this.room = z === 'garden' ? this.garden : this.rooms.get(z)!.group;
+  }
+
+  /** Adds a room light: parented to the root (so hiding a locked room's group
+   *  never changes the scene's light count and forces a shader recompile). */
+  addLight(l: THREE.PointLight) {
+    this.root.add(l);
+    if (this.currentZone !== 'garden') this.rooms.get(this.currentZone)!.lights.push(l);
+    this.lightBase.set(l, l.intensity);
+    return l;
+  }
+
+  zoneOf(id: string): ZoneId {
+    return (this.interactives.get(id)?.userData.zone as ZoneId) ?? 'study';
   }
 
   register(id: string, obj: THREE.Object3D, anchor: THREE.Vector3, hotspot = true) {
     obj.userData.iid = id;
+    obj.userData.zone = this.currentZone;
     obj.userData.anchor = anchor;
     obj.userData.baseScale = obj.scale.clone();
     this.interactives.set(id, obj);
@@ -181,91 +273,12 @@ export class World {
     return tex;
   }
 
-  // ---------------------------------------------------------------- island
-  private buildIsland() {
-    const plank = canvasTex(1024, 1024, (ctx) => {
-      const rows = 14;
-      const rh = 1024 / rows;
-      for (let r = 0; r < rows; r++) {
-        let x = -Math.random() * 300;
-        while (x < 1024) {
-          const len = rand(260, 520);
-          const l = rand(36, 46);
-          ctx.fillStyle = `hsl(${rand(20, 28)}, ${rand(38, 50)}%, ${l}%)`;
-          ctx.fillRect(x, r * rh, len, rh);
-          ctx.globalAlpha = 0.08;
-          for (let g = 0; g < 6; g++) {
-            ctx.fillStyle = Math.random() > 0.5 ? '#000' : '#fff';
-            ctx.fillRect(x, r * rh + rand(4, rh - 4), len, rand(1, 3));
-          }
-          ctx.globalAlpha = 1;
-          ctx.fillStyle = 'rgba(40,20,10,0.75)';
-          ctx.fillRect(x, r * rh, 3, rh);
-          x += len;
-        }
-        ctx.fillStyle = 'rgba(40,20,10,0.8)';
-        ctx.fillRect(0, r * rh, 1024, 3);
-      }
-    });
-    const top = std('#ffffff', { map: plank.tex, roughness: 0.62 });
-    const side = std('#5a3624');
-    this.floorTop = top;
-    this.floorSide = side;
-    this.floorTex = plank.tex;
-    const floor = new THREE.Mesh(new THREE.BoxGeometry(10.3, 0.5, 10.3), [side, side, top, side, side, side]);
-    floor.position.set(-0.15, -0.25, -0.15);
-    floor.receiveShadow = true;
-    this.root.add(floor);
-
-    const edge = mesh(new THREE.BoxGeometry(10.5, 0.14, 10.5), this.mats.trim, -0.15, -0.52, -0.15);
-    this.root.add(edge);
-
-    const g = new THREE.ConeGeometry(7.5, 7.5, 10, 5);
-    g.rotateX(Math.PI);
-    const p = g.attributes.position;
-    for (let i = 0; i < p.count; i++) {
-      const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
-      if (y > 3.7) continue;
-      const k = 0.9;
-      p.setX(i, x + (hash3(x, y, z) - 0.5) * k * 2);
-      p.setZ(i, z + (hash3(z, x, y) - 0.5) * k * 2);
-      p.setY(i, y + (hash3(y, z, x) - 0.5) * 0.6);
-    }
-    g.computeVertexNormals();
-    const rock = new THREE.Mesh(g, this.mats.rock);
-    rock.position.set(-0.15, -0.6 - 3.75, -0.15);
-    rock.rotation.y = 0.3;
-    rock.receiveShadow = true;
-    this.root.add(rock);
-
-    const crystalCols = ['#7df9ff', '#ff7eb6', '#b388ff'];
-    for (let i = 0; i < 9; i++) {
-      const a = (i / 9) * Math.PI * 2 + rand(-0.2, 0.2);
-      const r = rand(4.6, 6.2);
-      const y = rand(-1.6, -3.4);
-      const c = new THREE.Mesh(new THREE.OctahedronGeometry(rand(0.25, 0.45), 0), glow(crystalCols[i % 3], 1.6));
-      c.position.set(Math.cos(a) * r - 0.15, y, Math.sin(a) * r - 0.15);
-      c.scale.y = 2.2;
-      c.rotation.set(rand(-0.4, 0.4), rand(0, 3), rand(-0.4, 0.4));
-      this.root.add(c);
-    }
-
-    for (let i = 0; i < 6; i++) {
-      const r = new THREE.Mesh(new THREE.DodecahedronGeometry(rand(0.35, 0.9), 0), i % 2 ? this.mats.rock : this.mats.rockDark);
-      const a = (i / 6) * Math.PI * 2;
-      r.userData.orbit = { a, r: rand(9, 12.5), y: rand(-3, 1.5), s: rand(0.04, 0.09) };
-      r.castShadow = true;
-      this.rocks.push(r);
-      this.root.add(r);
-    }
-  }
-
   // ---------------------------------------------------------------- walls
   private wallBox(x0: number, x1: number, y0: number, y1: number, z0: number, z1: number) {
     const add = (ya: number, yb: number, mat: THREE.Material) => {
       if (yb - ya <= 0.001) return;
       const m = mesh(new THREE.BoxGeometry(x1 - x0, yb - ya, z1 - z0), mat, (x0 + x1) / 2, (ya + yb) / 2, (z0 + z1) / 2);
-      this.root.add(m);
+      this.room.add(m);
     };
     if (y0 < RAIL_Y && y1 > RAIL_Y) {
       add(y0, RAIL_Y, this.mats.wallLow);
@@ -287,20 +300,20 @@ export class World {
     this.wallBox(-5.3, -5.0, 2.8, WALL_H, -3.0, -0.6);
 
     const t = this.mats.trim;
-    this.root.add(mesh(new THREE.BoxGeometry(10.42, 0.1, 0.42), t, -0.15, WALL_H + 0.05, -5.15));
-    this.root.add(mesh(new THREE.BoxGeometry(0.42, 0.1, 10.3), t, -5.15, WALL_H + 0.05, -0.15));
-    this.root.add(mesh(new THREE.BoxGeometry(0.06, WALL_H + 0.1, 0.42), t, 5.02, WALL_H / 2, -5.15));
-    this.root.add(mesh(new THREE.BoxGeometry(0.42, WALL_H + 0.1, 0.06), t, -5.15, WALL_H / 2, 5.02));
+    this.room.add(mesh(new THREE.BoxGeometry(10.42, 0.1, 0.42), t, -0.15, WALL_H + 0.05, -5.15));
+    this.room.add(mesh(new THREE.BoxGeometry(0.42, 0.1, 10.3), t, -5.15, WALL_H + 0.05, -0.15));
+    this.room.add(mesh(new THREE.BoxGeometry(0.06, WALL_H + 0.1, 0.42), t, 5.02, WALL_H / 2, -5.15));
+    this.room.add(mesh(new THREE.BoxGeometry(0.42, WALL_H + 0.1, 0.06), t, -5.15, WALL_H / 2, 5.02));
 
     const b = this.mats.baseboard;
-    this.root.add(mesh(new THREE.BoxGeometry(10, 0.2, 0.05), b, 0, 0.1, -4.97));
-    this.root.add(mesh(new THREE.BoxGeometry(0.05, 0.2, 2.4), b, -4.97, 0.1, -4.0));
-    this.root.add(mesh(new THREE.BoxGeometry(0.05, 0.2, 5.6), b, -4.97, 0.1, 2.2));
+    this.room.add(mesh(new THREE.BoxGeometry(10, 0.2, 0.05), b, 0, 0.1, -4.97));
+    this.room.add(mesh(new THREE.BoxGeometry(0.05, 0.2, 2.4), b, -4.97, 0.1, -4.0));
+    this.room.add(mesh(new THREE.BoxGeometry(0.05, 0.2, 5.6), b, -4.97, 0.1, 2.2));
     // chair rail
-    this.root.add(mesh(new THREE.BoxGeometry(2.3, 0.07, 0.07), t, -3.85, RAIL_Y, -4.96));
-    this.root.add(mesh(new THREE.BoxGeometry(5.3, 0.07, 0.07), t, 2.35, RAIL_Y, -4.96));
-    this.root.add(mesh(new THREE.BoxGeometry(0.07, 0.07, 2.0), t, -4.96, RAIL_Y, -4.0));
-    this.root.add(mesh(new THREE.BoxGeometry(0.07, 0.07, 5.6), t, -4.96, RAIL_Y, 2.2));
+    this.room.add(mesh(new THREE.BoxGeometry(2.3, 0.07, 0.07), t, -3.85, RAIL_Y, -4.96));
+    this.room.add(mesh(new THREE.BoxGeometry(5.3, 0.07, 0.07), t, 2.35, RAIL_Y, -4.96));
+    this.room.add(mesh(new THREE.BoxGeometry(0.07, 0.07, 2.0), t, -4.96, RAIL_Y, -4.0));
+    this.room.add(mesh(new THREE.BoxGeometry(0.07, 0.07, 5.6), t, -4.96, RAIL_Y, 2.2));
   }
 
   private buildWindow() {
@@ -339,7 +352,7 @@ export class World {
       g.add(s);
     }
     this.windowGroup = g;
-    this.root.add(g);
+    this.room.add(g);
     this.register('window', g, new THREE.Vector3(cx, cy + 0.3, z + 0.2));
   }
 
@@ -356,7 +369,7 @@ export class World {
       desk.add(mesh(new THREE.BoxGeometry(0.68, 0.24, 0.02), std('#c99366'), 0.95, y, 0.51));
       desk.add(mesh(new THREE.BoxGeometry(0.16, 0.03, 0.04), this.mats.gold, 0.95, y + 0.04, 0.53));
     }
-    this.root.add(desk);
+    this.room.add(desk);
 
     // chair
     const chair = new THREE.Group();
@@ -366,7 +379,7 @@ export class World {
     chair.add(mesh(new RoundedBoxGeometry(0.62, 0.1, 0.6, 2, 0.04), cm, 0, 0.62, 0));
     chair.add(mesh(new RoundedBoxGeometry(0.62, 0.7, 0.08, 2, 0.04), cm, 0, 1.0, 0.28));
     for (const [x, z] of [[-0.26, -0.24], [0.26, -0.24], [-0.26, 0.24], [0.26, 0.24]]) chair.add(mesh(new THREE.BoxGeometry(0.05, 0.6, 0.05), this.mats.frame, x, 0.3, z));
-    this.root.add(chair);
+    this.room.add(chair);
 
     // computer
     const pc = new THREE.Group();
@@ -386,7 +399,7 @@ export class World {
       pc.add(mesh(new THREE.BoxGeometry(0.06, 0.025, 0.06), std(r === 2 && c > 2 && c < 7 ? '#cfc6b3' : '#f6f0e2'), -0.36 + c * 0.082, 0.03, 0.62 + r * 0.085));
     }
     pc.add(mesh(new RoundedBoxGeometry(0.1, 0.04, 0.16, 2, 0.02), shell, 0.68, 0.0, 0.72));
-    this.root.add(pc);
+    this.room.add(pc);
     this.register('computer', pc, new THREE.Vector3(0, 0.95, 0.3));
 
     // mug
@@ -397,7 +410,7 @@ export class World {
     mug.add(mesh(new THREE.TorusGeometry(0.06, 0.018, 6, 12), mm, 0.11, 0.12, 0));
     mug.add(mesh(new THREE.CylinderGeometry(0.085, 0.085, 0.01, 16), std('#4a2c1a'), 0, 0.2, 0));
     this.mug = mug;
-    this.root.add(mug);
+    this.room.add(mug);
     this.register('mug', mug, new THREE.Vector3(0, 0.35, 0));
     this.floatables.push(mug);
 
@@ -409,7 +422,7 @@ export class World {
       b.rotation.y = rand(-0.2, 0.2);
       stack.add(b);
     });
-    this.root.add(stack);
+    this.room.add(stack);
     this.floatables.push(stack);
   }
 
@@ -463,7 +476,7 @@ export class World {
     g.add(mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.04, 12), glow('#4fc3ff', 1.2), 0.12, 1.26, 0.64));
     g.add(mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.04, 12), glow('#ffd36b', 1.2), 0.3, 1.24, 0.68));
     g.add(mesh(new THREE.BoxGeometry(0.16, 0.08, 0.02), glow('#ff9a3c', 1.0), 0, 0.55, 0.48));
-    this.root.add(g);
+    this.room.add(g);
     this.register('arcade', g, new THREE.Vector3(0, 2.2, 0.5));
   }
 
@@ -511,7 +524,7 @@ export class World {
     }
     g.add(mesh(new RoundedBoxGeometry(0.4, 0.3, 0.4, 2, 0.04), std('#4fc3a1'), 0, H + 0.15, 0.6));
     this.bookshelf = g;
-    this.root.add(g);
+    this.room.add(g);
     this.register('bookshelf', g, new THREE.Vector3(0.3, 2.6, 0));
     this.register('redbook', this.redbook, new THREE.Vector3(0.25, 0.35, 0), false);
   }
@@ -540,7 +553,7 @@ export class World {
     }
     g.add(growth);
     this.plantGrowth = growth;
-    this.root.add(g);
+    this.room.add(g);
     this.register('plant', g, new THREE.Vector3(0, 2.4, 0));
   }
 
@@ -581,7 +594,7 @@ export class World {
     this.clockMinute = mesh(mg, handMat, 0, 0, 0.075);
     g.add(this.clockHour, this.clockMinute);
     g.add(mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.04, 12).rotateX(Math.PI / 2), std('#ff7eb6'), 0, 0, 0.09));
-    this.root.add(g);
+    this.room.add(g);
     this.register('clock', g, new THREE.Vector3(0, 0.55, 0.1));
   }
 
@@ -605,7 +618,7 @@ export class World {
     g.position.set(3.55, 3.75, -4.93);
     g.scale.setScalar(1.25);
     g.add(tube);
-    this.root.add(g);
+    this.room.add(g);
     this.register('neon', g, new THREE.Vector3(0, 0.45, 0.1));
   }
 
@@ -648,7 +661,7 @@ export class World {
     g.add(mesh(new THREE.SphereGeometry(0.03, 8, 6), this.mats.gold, 0, 0.0, 0.02));
     g.rotation.z = 0.06;
     this.poster = g;
-    this.root.add(g);
+    this.room.add(g);
     this.register('poster', g, new THREE.Vector3(0, -0.1, 0.1));
   }
 
@@ -672,7 +685,7 @@ export class World {
       face.rotation.y = Math.PI / 2;
       face.position.x = 0.056;
       tile.add(face);
-      this.root.add(tile);
+      this.room.add(tile);
       this.glyphTiles.push(tile);
       this.register(`glyph${i}`, tile, new THREE.Vector3(0.1, 0.3, 0), false);
     });
@@ -706,7 +719,7 @@ export class World {
     this.rug.rotation.x = -Math.PI / 2;
     this.rug.position.set(0.4, 0.012, 0.9);
     this.rug.receiveShadow = true;
-    this.root.add(this.rug);
+    this.room.add(this.rug);
     this.register('rug', this.rug, new THREE.Vector3(1.6, -1.6, 0.1));
 
     const table = new THREE.Group();
@@ -714,13 +727,13 @@ export class World {
     table.add(mesh(new THREE.CylinderGeometry(0.95, 0.95, 0.09, 40), this.mats.wood, 0, 0.58, 0));
     table.add(mesh(new THREE.CylinderGeometry(0.1, 0.14, 0.52, 12), this.mats.darkWood, 0, 0.28, 0));
     table.add(mesh(new THREE.CylinderGeometry(0.45, 0.5, 0.05, 24), this.mats.darkWood, 0, 0.03, 0));
-    this.root.add(table);
+    this.room.add(table);
 
     const pizza = mesh(new THREE.BoxGeometry(0.55, 0.06, 0.55), std('#e8c79a'), 1.05, 0.66, 1.3);
     pizza.rotation.y = 0.4;
-    this.root.add(pizza);
+    this.room.add(pizza);
     const can = mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.2, 12), std('#e63946', { metalness: 0.6, roughness: 0.3 }), 1.05, 0.73, 0.5);
-    this.root.add(can);
+    this.room.add(can);
     this.floatables.push(pizza, can);
 
     // the suspicious box
@@ -777,7 +790,7 @@ export class World {
     this.boxBeams.scale.setScalar(0.001);
     this.boxBeams.visible = false;
     box.add(this.boxBeams);
-    this.root.add(box);
+    this.room.add(box);
     this.floatables.push(box);
     this.register('box', box, new THREE.Vector3(0, 0.6, 0));
   }
@@ -794,7 +807,7 @@ export class World {
     g.add(shade);
     this.lampBulb = new THREE.MeshStandardMaterial({ color: '#000', emissive: '#ffd59a', emissiveIntensity: 2 });
     g.add(mesh(new THREE.SphereGeometry(0.1, 12, 8), this.lampBulb, 0, 2.36, 0));
-    this.root.add(g);
+    this.room.add(g);
     this.register('lamp', g, new THREE.Vector3(0, 2.75, 0));
   }
 
@@ -812,7 +825,7 @@ export class World {
     pillow.rotation.set(0.12, 0.15, 0.08);
     g.add(pillow);
     this.beanbagInner = inner;
-    this.root.add(g);
+    this.room.add(g);
     this.register('beanbag', g, new THREE.Vector3(0, 1.1, 0));
   }
 
@@ -825,7 +838,7 @@ export class World {
       b.rotation.y = rand(-0.25, 0.25);
       books.add(b);
     });
-    this.root.add(books);
+    this.room.add(books);
     this.floatables.push(books);
 
     const cactus = new THREE.Group();
@@ -833,7 +846,7 @@ export class World {
     cactus.add(mesh(new THREE.CylinderGeometry(0.2, 0.15, 0.3, 12), std('#ff8fb1'), 0, 0.15, 0));
     cactus.add(mesh(new THREE.CapsuleGeometry(0.12, 0.45, 4, 8), std('#4caf7a'), 0, 0.6, 0));
     cactus.add(mesh(new THREE.CapsuleGeometry(0.06, 0.18, 4, 8), std('#4caf7a'), 0.14, 0.62, 0).rotateZ(-0.9));
-    this.root.add(cactus);
+    this.room.add(cactus);
     this.floatables.push(cactus);
 
     const fern = new THREE.Group();
@@ -845,7 +858,7 @@ export class World {
       l.rotation.y = rand(0, 3);
       fern.add(l);
     }
-    this.root.add(fern);
+    this.room.add(fern);
 
     const side = new THREE.Group();
     side.position.set(-1.7, 0, 3.9);
@@ -859,7 +872,7 @@ export class World {
     flame.scale.y = 1.8;
     side.add(flame);
     this.flames.push(flame);
-    this.root.add(side);
+    this.room.add(side);
   }
 
   // ---------------------------------------------------------------- string lights
@@ -878,14 +891,14 @@ export class World {
         }
       }
       const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: '#1a1430' }));
-      this.root.add(line);
+      this.room.add(line);
       for (let i = 0; i < n; i++) {
         const p = pts[Math.floor((i / n) * pts.length + pts.length / n / 2)];
         const base = new THREE.Color(cols[i % cols.length]);
         const mat = new THREE.MeshStandardMaterial({ color: '#000', emissive: base, emissiveIntensity: 2.4 });
         const m = new THREE.Mesh(new THREE.SphereGeometry(0.055, 8, 6), mat);
         m.position.copy(p).y -= 0.05;
-        this.root.add(m);
+        this.room.add(m);
         this.bulbs.push({ mesh: m, mat, base });
       }
     };
@@ -942,21 +955,21 @@ export class World {
       c.visible = false;
       this.cubes.push(c);
       this.cubeHome.push(homes[i].clone());
-      this.root.add(c);
+      this.room.add(c);
       this.register(`cube${i}`, c, new THREE.Vector3(0, 0.35, 0), false);
     });
 
     this.alcove = g;
-    this.root.add(g);
+    this.room.add(g);
   }
 
   // ---------------------------------------------------------------- dust
   private buildDust() {
-    const N = 260;
+    const N = 520;
     const pos = new Float32Array(N * 3);
     const seed = new Float32Array(N);
     for (let i = 0; i < N; i++) {
-      pos.set([rand(-5, 5), rand(0.2, 4.8), rand(-5, 5)], i * 3);
+      pos.set([rand(-5, 16), rand(0.2, 4.8), rand(-5, 13.5)], i * 3);
       seed[i] = Math.random() * 50;
     }
     const geo = new THREE.BufferGeometry();
@@ -980,163 +993,125 @@ export class World {
 
   setDustColor(c: THREE.ColorRepresentation) { (this.dustMat.uniforms.uColor.value as THREE.Color).set(c); }
 
-  /** Repaints the walls and neon cloud to a theme preset. `this.mats.wall`/`wallLow`
-   *  are shared by every wall segment (they were passed by reference in wallBox()),
-   *  so mutating the two material instances here repaints the whole room at once —
-   *  no need to touch individual meshes. */
-  setTheme(name: ThemeName) {
-    const t = ROOM_THEMES[name];
-    this.mats.wall.color.set(t.wall);
-    this.mats.wallLow.color.set(t.wallLow);
-    this.neonMat.emissive.set(t.neon);
-    this.lights.neon.color.set(t.neon);
+  // ---------------------------------------------------------------- house state
+  setPaint(id: RoomId, paint: PaintId) {
+    const r = this.rooms.get(id)!;
+    const p = PAINTS[paint] ?? PAINTS.violet;
+    r.wall.color.set(p.wall);
+    r.wallLow.color.set(p.wallLow);
   }
 
-  // ---------------------------------------------------------------- room growth
-  /** `levels` = how many extended levels are unlocked (0..7). Each one widens the
-   *  L-shaped deck along the room's two open sides by GROW_STEP and adds that
-   *  level's new objects on the freshly built strip. Idempotent. */
-  setGrowth(levels: number) {
-    levels = Math.max(0, Math.min(levels, EXT_LEVELS.length));
-    for (let k = 0; k < levels; k++) this.ensureLevelProps(k);
-    if (levels === this.growthLevels) return;
-    this.growthLevels = levels;
-    this.growth = levels * GROW_STEP;
-    this.rebuildAnnex();
-    const b = 9 + this.growth;
-    const cam = this.lights.key.shadow.camera;
-    cam.left = -b;
-    cam.right = b;
-    cam.top = b;
-    cam.bottom = -b;
-    cam.updateProjectionMatrix();
+  /** Locked rooms keep their floor and walls but hide everything inside, and
+   *  show a floating padlock instead. Lights stay in the scene at zero
+   *  intensity (changing the light count would recompile every shader). */
+  setRoomLocked(id: RoomId, locked: boolean) {
+    const r = this.rooms.get(id)!;
+    r.locked = locked;
+    r.group.visible = !locked;
+    r.lock.visible = locked;
+    for (const l of r.lights) {
+      if (l.userData.base === undefined) l.userData.base = this.lightBase.get(l) ?? l.intensity;
+      if (locked) {
+        this.lightBase.delete(l);
+        l.intensity = 0;
+      } else if (!l.userData.manual) {
+        this.lightBase.set(l, l.userData.base as number);
+        l.intensity = l.userData.base as number;
+      }
+    }
+    if (locked) for (const [hid, s] of this.hotspots) if (this.zoneOf(hid) === id) s.visible = false;
   }
 
-  private rebuildAnnex() {
-    for (const c of [...this.annex.children]) this.annex.remove(c);
-    for (const d of this.annexDisposables) d.dispose();
-    this.annexDisposables = [];
-    const w = this.growth;
-    if (w <= 0) return;
-    const deck = (x0: number, x1: number, z0: number, z1: number) => {
-      const sx = x1 - x0, sz = z1 - z0;
-      const tex = this.floorTex.clone();
-      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-      tex.repeat.set(sx / 10.3, sz / 10.3);
-      tex.needsUpdate = true;
-      const top = this.floorTop.clone();
-      top.map = tex;
-      const geo = new THREE.BoxGeometry(sx, 0.5, sz);
-      const m = new THREE.Mesh(geo, [this.floorSide, this.floorSide, top, this.floorSide, this.floorSide, this.floorSide]);
-      m.position.set((x0 + x1) / 2, -0.25, (z0 + z1) / 2);
-      m.receiveShadow = true;
-      this.annex.add(m);
-      const trimGeo = new THREE.BoxGeometry(sx + 0.2, 0.14, sz + 0.2);
-      this.annex.add(mesh(trimGeo, this.mats.trim, (x0 + x1) / 2, -0.52, (z0 + z1) / 2));
-      this.annexDisposables.push(tex, top, geo, trimGeo);
-    };
-    deck(-5.3, 5.0 + w, 5.0, 5.0 + w);
-    deck(5.0, 5.0 + w, -5.3, 5.0);
-  }
-
-  /** Props for extended level k sit on that level's own strip of deck, spread
-   *  along the L-shaped path — positions are deterministic so reloads match. */
-  private ensureLevelProps(k: number) {
-    const n = EXT_LEVELS[k].props;
-    const start = propStart(k);
-    const d = 5.0 + (k + 0.5) * GROW_STEP;
-    const legLen = d + 4.0;
-    const total = legLen * 2;
-    for (let j = 0; j < n; j++) {
-      const idx = start + j;
-      const id = `prop${idx}`;
-      if (this.interactives.has(id)) continue;
-      const s = (total * (j + 0.5 + (k % 2) * 0.3)) / n % total;
-      const x = s < legLen ? -4.0 + s : d;
-      const z = s < legLen ? d : d - (s - legLen);
-      const type = PROP_TYPES[idx % PROP_TYPES.length];
-      const { g, anchorY } = this.buildProp(type, idx);
-      g.position.set(x, 0, z);
-      g.rotation.y = idx * 1.7;
-      this.root.add(g);
-      this.propTypes.set(id, type);
-      this.register(id, g, new THREE.Vector3(0, anchorY, 0));
+  /** Interior walls between the camera and the focused room drop to CUT_H so
+   *  the room is always fully visible; in the whole-house view they all drop. */
+  setFocus(focus: RoomId | null, instant = false) {
+    this.focus = focus;
+    const r = focus ? this.rooms.get(focus)! : null;
+    for (const w of this.cutWalls) {
+      const full = !!r && focus !== 'observatory' && (w.axis === 'z' ? w.at <= r.z0 + 0.01 : w.at <= r.x0 + 0.01);
+      const cut = !full;
+      if (cut === w.cut && !instant) continue;
+      w.cut = cut;
+      const k = cut ? CUT_H / WALL_H : 1;
+      gsap.killTweensOf(w.group.scale);
+      if (instant) w.group.scale.y = k;
+      else gsap.to(w.group.scale, { y: k, duration: 0.7, ease: 'power2.inOut' });
+      for (const d of w.doors) {
+        if (cut) d.visible = false;
+        else if (instant) d.visible = true;
+        else gsap.delayedCall(0.45, () => { if (!w.cut) d.visible = true; });
+      }
+    }
+    for (const m of this.mounts) {
+      const full = !!r && focus !== 'observatory' && (m.axis === 'z' ? m.at <= r.z0 + 0.01 : m.at <= r.x0 + 0.01);
+      if (!full) m.obj.visible = false;
+      else if (instant) m.obj.visible = true;
+      else gsap.delayedCall(0.45, () => { if (this.focus === focus) m.obj.visible = true; });
     }
   }
 
-  private buildProp(type: PropType, idx: number): { g: THREE.Group; anchorY: number } {
-    const g = new THREE.Group();
-    const col = PROP_COLS[idx % PROP_COLS.length];
-    const wood = this.mats.wood, dark = this.mats.darkWood, gold = this.mats.gold;
-    switch (type) {
-      case 'lantern': {
-        g.add(mesh(new THREE.CylinderGeometry(0.22, 0.28, 0.12, 12), this.mats.frame, 0, 0.06, 0));
-        g.add(mesh(new THREE.CylinderGeometry(0.035, 0.035, 1.4, 8), gold, 0, 0.8, 0));
-        g.add(mesh(new THREE.SphereGeometry(0.18, 16, 12), glow(col, 2.4), 0, 1.6, 0));
-        g.add(mesh(new THREE.ConeGeometry(0.2, 0.16, 12), this.mats.frame, 0, 1.84, 0));
-        return { g, anchorY: 2.0 };
-      }
-      case 'crate': {
-        g.add(mesh(new RoundedBoxGeometry(0.75, 0.75, 0.75, 2, 0.05), wood, 0, 0.375, 0));
-        for (const y of [0.15, 0.6]) g.add(mesh(new THREE.BoxGeometry(0.78, 0.07, 0.78), dark, 0, y, 0));
-        g.add(mesh(new THREE.BoxGeometry(0.2, 0.2, 0.02), glow(col, 1.4), 0, 0.4, 0.39));
-        return { g, anchorY: 0.95 };
-      }
-      case 'crystal': {
-        g.add(mesh(new THREE.DodecahedronGeometry(0.32, 0), this.mats.rock, 0, 0.2, 0));
-        const c = mesh(new THREE.OctahedronGeometry(0.26, 0), glow(col, 2), 0, 0.85, 0);
-        c.scale.y = 2;
-        g.add(c);
-        this.spinners.push(c);
-        return { g, anchorY: 1.5 };
-      }
-      case 'statue': {
-        g.add(mesh(new THREE.BoxGeometry(0.6, 0.5, 0.6), std('#4a3d78', { roughness: 0.8 }), 0, 0.25, 0));
-        const knot = mesh(new THREE.TorusKnotGeometry(0.2, 0.07, 64, 8), std(col, { metalness: 0.6, roughness: 0.3 }), 0, 0.95, 0);
-        g.add(knot);
-        this.spinners.push(knot);
-        return { g, anchorY: 1.45 };
-      }
-      case 'chest': {
-        g.add(mesh(new THREE.BoxGeometry(0.85, 0.45, 0.55), dark, 0, 0.225, 0));
-        const lid = mesh(new THREE.CylinderGeometry(0.275, 0.275, 0.85, 16, 1, false, 0, Math.PI), dark, 0, 0.45, 0);
-        lid.rotation.z = Math.PI / 2;
-        g.add(lid);
-        g.add(mesh(new THREE.BoxGeometry(0.1, 0.5, 0.57), gold, 0, 0.32, 0));
-        g.add(mesh(new THREE.BoxGeometry(0.12, 0.12, 0.04), glow(col, 1.6), 0, 0.32, 0.29));
-        return { g, anchorY: 1.0 };
-      }
-      case 'orb': {
-        g.add(mesh(new THREE.CylinderGeometry(0.2, 0.3, 0.8, 12), std('#3b2f62', { roughness: 0.7 }), 0, 0.4, 0));
-        g.add(mesh(new THREE.TorusGeometry(0.24, 0.03, 8, 24).rotateX(Math.PI / 2), gold, 0, 0.82, 0));
-        g.add(mesh(new THREE.SphereGeometry(0.24, 24, 16), new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 0.6, metalness: 0.7, roughness: 0.15 }), 0, 1.08, 0));
-        return { g, anchorY: 1.5 };
-      }
-      case 'tree': {
-        g.add(mesh(new THREE.CylinderGeometry(0.08, 0.12, 0.9, 8), dark, 0, 0.45, 0));
-        g.add(mesh(new THREE.SphereGeometry(0.42, 12, 10), std('#4caf7a'), 0, 1.05, 0));
-        g.add(mesh(new THREE.SphereGeometry(0.28, 12, 10), std('#5cbf7d'), 0.18, 1.35, 0.1));
-        g.add(mesh(new THREE.SphereGeometry(0.07, 8, 6), glow(col, 2), -0.2, 1.2, 0.3));
-        return { g, anchorY: 1.75 };
-      }
+  mount(obj: THREE.Object3D, axis: 'x' | 'z', at: number) {
+    this.mounts.push({ obj, axis, at });
+    return obj;
+  }
+
+  setDoor(id: string, open: boolean, instant = false): Promise<void> {
+    const d = this.doors.get(id);
+    if (!d) return Promise.resolve();
+    d.open = open;
+    d.padlock.visible = !open;
+    const rot = open ? d.opened : d.closed;
+    if (instant) {
+      d.leaf.rotation.y = rot;
+      return Promise.resolve();
     }
+    return new Promise((res) => gsap.to(d.leaf.rotation, { y: rot, duration: 1.4, ease: 'power2.inOut', onComplete: () => res() }));
+  }
+
+  setLightsMode(mode: LightsMode) {
+    this.lightsMode = mode;
+    const cols = mode === 'ice' ? ['#bfefff', '#7df9ff', '#ffffff', '#9cc8ff'] : ['#ffcf6b', '#ff7eb6', '#7df9ff', '#b388ff'];
+    this.bulbs.forEach((b, i) => {
+      b.base.set(cols[i % cols.length]);
+      b.mat.emissive.copy(b.base);
+    });
+  }
+
+  /** Real-world time of day tints the house light (the sky itself is handled by Sky). */
+  setDayPhase(phase: 'dawn' | 'day' | 'dusk' | 'night') {
+    const { hemi, key } = this.lights;
+    const P = {
+      night: { sky: '#9a8cf0', ground: '#3a2238', hi: 1.25, key: '#d6c8ff', ki: 1.3 },
+      dawn: { sky: '#ffb8d0', ground: '#4a2a48', hi: 1.45, key: '#ffd2b0', ki: 1.6 },
+      day: { sky: '#d4dcff', ground: '#5a4a6a', hi: 1.7, key: '#fff4e0', ki: 2.0 },
+      dusk: { sky: '#ff9f80', ground: '#4a2238', hi: 1.4, key: '#ffb07a', ki: 1.5 },
+    }[phase];
+    hemi.color.set(P.sky);
+    hemi.groundColor.set(P.ground);
+    key.color.set(P.key);
+    hemi.intensity = P.hi;
+    key.intensity = P.ki;
+    this.lightBase.set(hemi, P.hi);
+    this.lightBase.set(key, P.ki);
   }
 
   // ---------------------------------------------------------------- lights
   private buildLights() {
     const hemi = new THREE.HemisphereLight('#9a8cf0', '#3a2238', 1.25);
     const key = new THREE.DirectionalLight('#d6c8ff', 1.3);
-    key.position.set(7, 14, 9);
+    key.position.set(17, 24, 19);
+    key.target.position.set(5.5, 0, 4);
     key.castShadow = true;
     key.shadow.mapSize.set(2048, 2048);
-    key.shadow.camera.left = -9;
-    key.shadow.camera.right = 9;
-    key.shadow.camera.top = 9;
-    key.shadow.camera.bottom = -9;
+    const b = 17;
+    key.shadow.camera.left = -b;
+    key.shadow.camera.right = b;
+    key.shadow.camera.top = b;
+    key.shadow.camera.bottom = -b;
     key.shadow.camera.near = 1;
-    key.shadow.camera.far = 40;
+    key.shadow.camera.far = 70;
     key.shadow.bias = -0.0005;
-    key.shadow.normalBias = 0.03;
+    key.shadow.normalBias = 0.04;
     key.shadow.radius = 4;
 
     const lamp = new THREE.PointLight('#ffb36b', 14, 0, 1.6);
@@ -1154,25 +1129,27 @@ export class World {
     const fill = new THREE.PointLight('#ff9ad5', 6, 14, 1.4);
     fill.position.set(0, 4.2, 1.5);
 
-    this.root.add(hemi, key, key.target, lamp, monitor, neon, arcade, alcove, box, fill);
+    this.root.add(hemi, key, key.target, monitor, arcade, alcove, box);
     this.lights = { hemi, key, lamp, monitor, neon, arcade, alcove, box, fill };
-    for (const l of [hemi, key, lamp, neon, fill]) this.lightBase.set(l, l.intensity);
+    for (const l of [hemi, key]) this.lightBase.set(l, l.intensity);
+    // The study's always-on lights belong to the study, so they go dark while it's locked.
+    this.useZone('study');
+    for (const l of [lamp, neon, fill]) this.addLight(l);
   }
 
   update(dt: number, t: number) {
     this.dustMat.uniforms.uTime.value = t;
-    // Orbiting rocks are pushed outward as the deck grows so they never clip through it.
-    const gr = 1 + this.growth / 7;
     for (const r of this.rocks) {
       const o = r.userData.orbit;
       o.a += dt * o.s;
-      r.position.set(Math.cos(o.a) * o.r * gr, o.y + Math.sin(t * 0.6 + o.a * 3) * 0.4, Math.sin(o.a) * o.r * gr);
+      r.position.set(5.5 + Math.cos(o.a) * o.r, o.y + Math.sin(t * 0.6 + o.a * 3) * 0.4, 4 + Math.sin(o.a) * o.r);
       r.rotation.x += dt * 0.2;
       r.rotation.y += dt * 0.15;
     }
     this.tesseract.update(dt);
     for (const s of this.spinners) s.rotation.y += dt * 0.8;
     for (const f of this.flames) {
+      if (!f.visible) continue;
       const k = 1 + Math.sin(t * 11 + f.position.x) * 0.18 + (Math.random() - 0.5) * 0.12;
       f.scale.set(k, 1.8 * k, k);
       (f.material as THREE.MeshStandardMaterial).emissiveIntensity = 4.6 + Math.sin(t * 17) * 1.1 + Math.random() * 0.4;
@@ -1192,11 +1169,17 @@ export class World {
       const k = 0.3 + Math.sin(t * 3 + id.length) * 0.06;
       s.scale.setScalar(k);
     }
+    for (const r of this.rooms.values()) {
+      if (!r.lock.visible) continue;
+      r.lock.rotation.y += dt * 0.6;
+      r.lock.position.y = r.floorY + 2.4 + Math.sin(t * 1.5 + r.x0) * 0.15;
+    }
+    for (const u of this.updaters) u(dt, t);
     for (const t2 of this.trophyRing.children) {
       const o = t2.userData.orbit;
       if (!o) continue;
       o.a += dt * 0.25;
-      t2.position.set(Math.cos(o.a) * o.r, o.y + Math.sin(t * 1.2 + o.a * 2) * 0.3, Math.sin(o.a) * o.r);
+      t2.position.set(5.5 + Math.cos(o.a) * o.r, o.y + Math.sin(t * 1.2 + o.a * 2) * 0.3, 4 + Math.sin(o.a) * o.r);
       t2.rotation.y += dt;
       t2.rotation.x += dt * 0.5;
     }

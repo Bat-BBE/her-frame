@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#0d0a1f" />
     <title>Little World</title>
-    <meta name="description" content="Жижиг өрөө. Том нууцууд. 3D ертөнцөөр аялж, нууцуудыг тайлах premium mini-game." />
+    <meta name="description" content="Хөвөгч арал дээрх жижигхэн байшин. Өрөө бүрт нууц, харанхуйд Сүүдэр. 3D нууц тайлах тоглоом." />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -16,41 +16,61 @@
     />
   </head>
   <body>
-    <canvas id="scene" aria-label="Little World 3D өрөө"></canvas>
+    <canvas id="scene" aria-label="Little World 3D байшин"></canvas>
 
     <div id="hud" class="hud" hidden>
       <header class="brand">
         <h1>Little World
           <svg class="smile" viewBox="0 0 32 32" width="34" height="34" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="16" cy="16" r="13"/><path d="M10.5 19c3 3.5 8 3.5 11 0"/><path d="M11.5 12v1.5M20.5 12v1.5"/></svg>
         </h1>
-        <p>Жижиг өрөө. Том нууцууд.</p>
+        <p>Жижиг байшин. Том нууц.</p>
       </header>
 
       <section class="quest" id="quest" aria-live="polite">
         <div class="quest-head">
-          <span class="quest-step" id="quest-step">1/6</span>
+          <span class="quest-step" id="quest-step"></span>
           <span class="quest-level" id="quest-level"></span>
           <h2 id="quest-title"></h2>
         </div>
         <p id="quest-sub"></p>
         <div class="tray" id="tray"></div>
+        <div class="inventory" id="inventory" hidden></div>
       </section>
 
-      <div class="counter" id="counter">
-        <span><b id="counter-n">0</b>/<span id="counter-t">0</span></span>
-        <small>нууц олдсон</small>
+      <button class="player" id="player" aria-label="Түвшин ба цуглуулга">
+        <span class="pc-ring"><b id="pc-level">1</b></span>
+        <span class="pc-main">
+          <span class="pc-title" id="pc-title"></span>
+          <span class="pc-bar"><i id="pc-xp"></i></span>
+          <span class="pc-xptext" id="pc-xptext"></span>
+        </span>
+        <span class="pc-side">
+          <span class="pc-coins">✦ <b id="pc-coins">0</b></span>
+          <span class="pc-streak">🔥 <b id="pc-streak">0</b></span>
+        </span>
+      </button>
+      <div class="gains" id="gains"></div>
+
+      <nav class="rooms" id="rooms" aria-label="Өрөөнүүд"></nav>
+
+      <div class="danger" id="danger" hidden>
+        <span class="danger-ic">👣</span>
+        <span class="danger-bar"><i id="danger-fill"></i></span>
+        <b id="danger-label"></b>
       </div>
 
       <div class="sticky" id="sticky">
         <button class="x" aria-label="Хаах">&times;</button>
-        <p>Бүх зүйл дээр дар.<br />Надад итгэ. :)</p>
+        <p>Бүх зүйл дээр дар.<br />Хөлийн чимээ сонсвол — нуугд. :)</p>
       </div>
 
       <nav class="toolbar" id="toolbar" aria-label="Хэрэгслүүд">
         <button data-action="hint" data-icon="sparkle" aria-label="Сэжүүр" title="Сэжүүр"></button>
+        <button data-action="daily" data-icon="calendar" aria-label="Өдрийн шуудан" title="Өдрийн бэлэг, даалгавар"></button>
+        <button data-action="collection" data-icon="trophy" aria-label="Цуглуулга" title="Цуглуулга ба тэмдэг"></button>
+        <button data-action="shop" data-icon="bag" aria-label="Дэлгүүр" title="Байшингаа чимэх"></button>
         <button data-action="photo" data-icon="camera" aria-label="Зураг авах" title="Зураг авах"></button>
         <button data-action="sound" data-icon="music" aria-label="Дуу" title="Дуу"></button>
-        <button data-action="collection" data-icon="trophy" aria-label="Цуглуулга" title="Цуглуулга ба амжилт"></button>
         <button data-action="menu" data-icon="more" aria-label="Цэс" title="Цэс"></button>
       </nav>
 
@@ -63,14 +83,15 @@
 
     <div id="modal" class="modal-root"></div>
     <div id="flash" class="flash"></div>
+    <div class="vignette" aria-hidden="true"></div>
 
     <div id="start" class="start">
       <div class="start-inner">
-        <p class="eyebrow">a tiny 3D mystery</p>
+        <p class="eyebrow">a tiny 3D mystery house</p>
         <h1>Little World</h1>
-        <p class="tag">Nothing is what it seems.</p>
+        <p class="tag">Nothing is what it seems. Not even the shadows.</p>
         <button id="start-btn" class="btn-primary big" disabled>Нэвтрэх</button>
-        <p class="start-hint">Чирж эргүүлэх · дарж судлах · дуутай тоглоход илүү гоё</p>
+        <p class="start-hint">Чирж эргүүлэх · дарж судлах · дуутай тоглоход илүү гоё (бас илүү аймшигтай)</p>
       </div>
     </div>
 

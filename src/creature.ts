@@ -1,13 +1,13 @@
 import * as THREE from 'three';
 import gsap from 'gsap';
-import { std, mesh } from './util';
+import { std, mesh, glow } from './util';
 import type { World } from './world';
+import type { HatId } from './data';
 
 type Mode = 'hidden' | 'peek' | 'run' | 'caught' | 'sit';
 
 const HIDE = new THREE.Vector3(-5.15, 0, -1.1);
 const PEEK = new THREE.Vector3(-4.72, 0, -0.36);
-const SIT = new THREE.Vector3(-3.0, 0.78, 3.35);
 
 export class Creature {
   readonly group = new THREE.Group();
@@ -18,6 +18,12 @@ export class Creature {
   private u = 0;
   private runLeft = 0;
   private blinkT = 2;
+  private hat = new THREE.Group();
+  /** Once caught, Mochi trots along behind this (the player's avatar). */
+  followTarget: THREE.Object3D | null = null;
+  private hopT = 0;
+  /** Where Mochi sits — moves to whichever room you're in once caught. */
+  readonly spot = new THREE.Vector3(-3.0, 0.78, 3.35);
   onEscaped?: () => void;
 
   constructor(world: World) {
@@ -44,6 +50,8 @@ export class Creature {
       this.body.add(blush);
       this.body.add(mesh(new THREE.SphereGeometry(0.07, 10, 8), pink, s * 0.13, 0.04, 0.08));
     }
+    this.hat.position.y = 0.52;
+    this.body.add(this.hat);
     this.group.add(this.body);
     // Mochi only sprints into view for a few seconds — on a phone, tapping its actual
     // ~0.3-unit body while it runs is nearly impossible. This invisible sphere (same
@@ -109,9 +117,10 @@ export class Creature {
   }
 
   sit(instant = false) {
+    const SIT = this.spot;
     this.mode = 'sit';
     this.group.visible = true;
-    const face = () => this.group.lookAt(SIT.x + 6, SIT.y, SIT.z + 3);
+    const face = () => this.group.lookAt(SIT.x + 6, SIT.y, SIT.z + 6);
     if (instant) {
       this.group.position.copy(SIT);
       face();
@@ -122,6 +131,83 @@ export class Creature {
       .to(this.group.position, { x: SIT.x, z: SIT.z, duration: 1.2, ease: 'power1.inOut' }, 0)
       .to(this.group.position, { y: SIT.y + 0.6, duration: 0.9, ease: 'power1.out' }, 0)
       .to(this.group.position, { y: SIT.y, duration: 0.3, ease: 'bounce.out' });
+  }
+
+  /** Pops out of view and back in at a new spot (used when Mochi follows you to another room). */
+  hopTo(spot: THREE.Vector3) {
+    if (this.mode !== 'sit') return;
+    this.spot.copy(spot);
+    gsap.killTweensOf(this.group.scale);
+    gsap.to(this.group.scale, {
+      x: 0.01, y: 0.01, z: 0.01, duration: 0.25, ease: 'back.in(2)',
+      onComplete: () => {
+        this.sit(true);
+        gsap.to(this.group.scale, { x: 1, y: 1, z: 1, duration: 0.5, ease: 'back.out(2.5)' });
+      },
+    });
+  }
+
+  /** Mochi trembles while the Shadow is near. */
+  scared(on: boolean) {
+    gsap.killTweensOf(this.body.position);
+    if (on) gsap.to(this.body.position, { x: 0.025, duration: 0.05, yoyo: true, repeat: -1 });
+    else this.body.position.x = 0;
+  }
+
+  private follow(dt: number) {
+    const tg = this.followTarget!;
+    if (!tg.visible) return;
+    const back = new THREE.Vector3(0.45, 0, -0.6).applyAxisAngle(new THREE.Vector3(0, 1, 0), tg.rotation.y);
+    const want = tg.position.clone().add(back);
+    const g = this.group.position;
+    const dx = want.x - g.x, dz = want.z - g.z;
+    const d = Math.hypot(dx, dz);
+    if (d > 6) {
+      g.set(want.x, tg.position.y, want.z);
+      return;
+    }
+    if (d > 0.3) {
+      const sp = Math.min(5, 1.5 + d * 2.5) * dt;
+      g.x += (dx / d) * Math.min(sp, d);
+      g.z += (dz / d) * Math.min(sp, d);
+      this.hopT += dt * 11;
+      g.y = tg.position.y + Math.abs(Math.sin(this.hopT)) * 0.16;
+      this.group.rotation.y = Math.atan2(dx, dz);
+    } else {
+      g.y += (tg.position.y - g.y) * Math.min(1, dt * 10);
+      let a = Math.atan2(4, 4);
+      a = this.group.rotation.y + ((a - this.group.rotation.y) * Math.min(1, dt * 3));
+      this.group.rotation.y = a;
+    }
+  }
+
+  setHat(id: HatId | null) {
+    this.hat.clear();
+    if (!id) return;
+    if (id === 'hat-party') {
+      const c = mesh(new THREE.ConeGeometry(0.12, 0.3, 14), std('#ff7eb6', { roughness: 0.5 }), 0, 0.12, 0);
+      this.hat.add(c, mesh(new THREE.SphereGeometry(0.04, 8, 6), std('#ffd36b'), 0, 0.29, 0));
+    } else if (id === 'hat-bow') {
+      for (const s of [-1, 1]) {
+        const lobe = mesh(new THREE.SphereGeometry(0.08, 10, 8), std('#ff5fa2', { roughness: 0.5 }), s * 0.09, -0.02, 0.05);
+        lobe.scale.set(1.2, 0.8, 0.5);
+        this.hat.add(lobe);
+      }
+      this.hat.add(mesh(new THREE.SphereGeometry(0.04, 8, 6), std('#ff5fa2'), 0, -0.02, 0.06));
+    } else if (id === 'hat-wizard') {
+      const c = mesh(new THREE.ConeGeometry(0.15, 0.42, 16), std('#3f2a9a', { roughness: 0.5 }), 0, 0.18, 0);
+      c.rotation.z = 0.15;
+      this.hat.add(c, mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.03, 20), std('#3f2a9a'), 0, -0.02, 0));
+      this.hat.add(mesh(new THREE.OctahedronGeometry(0.04, 0), glow('#ffd36b', 3), 0.03, 0.22, 0.1));
+    } else if (id === 'hat-crown') {
+      const ring = mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.1, 5, 1, true), std('#ffd700', { metalness: 0.8, roughness: 0.25, side: THREE.DoubleSide }), 0, 0.03, 0);
+      this.hat.add(ring);
+      for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * Math.PI * 2;
+        this.hat.add(mesh(new THREE.ConeGeometry(0.03, 0.08, 6), std('#ffd700', { metalness: 0.8, roughness: 0.25 }), Math.sin(a) * 0.13, 0.11, Math.cos(a) * 0.13));
+      }
+    }
+    this.hat.traverse((o) => { o.castShadow = true; });
   }
 
   bounce() {
@@ -141,6 +227,7 @@ export class Creature {
       this.blinkT = 2 + Math.random() * 3;
       for (const e of this.eyes) gsap.fromTo(e.scale, { y: 0.1 }, { y: 1, duration: 0.15, ease: 'power1.out' });
     }
+    if (this.mode === 'sit' && this.followTarget) this.follow(dt);
     if (this.mode !== 'run') return;
     const len = this.path.getLength();
     this.u += (dt * 4.2) / len;
