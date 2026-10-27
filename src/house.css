@@ -1033,3 +1033,149 @@ body.scared .vignette {
     max-height: 58vh;
   }
 }
+
+/* ================================================================ touch devices */
+/* No double-tap-to-zoom anywhere in the UI (it delays every tap ~300ms and zooms
+   the HUD on fast repeat taps like the keypad or the heartbeat QTE). */
+.hud,
+.modal-root,
+.start {
+  touch-action: manipulation;
+}
+.term-out {
+  height: min(260px, 34dvh);
+}
+/* Hover lifts stick after a tap on touch screens; keep only the press feedback. */
+@media (hover: none) {
+  .toolbar button:hover,
+  .room-chip:hover,
+  .btn-primary:hover {
+    transform: none;
+  }
+}
+
+/* ================================================================ landscape phones */
+/* Wider than the 760px phone layout, but only ~360-430px tall: the desktop HUD
+   would stack the quest, room list and toolbar on top of each other. */
+@media (max-height: 500px) and (min-width: 561px) {
+  .brand,
+  .sticky {
+    display: none;
+  }
+  .quest {
+    top: max(8px, env(safe-area-inset-top));
+    left: max(10px, env(safe-area-inset-left));
+    bottom: auto;
+    right: auto;
+    width: min(260px, 34vw);
+    max-height: calc(100% - 84px - max(8px, env(safe-area-inset-bottom)));
+    overflow-y: auto;
+    padding: 10px 12px;
+  }
+  .quest h2 {
+    font-size: 16px;
+  }
+  .quest p {
+    font-size: 12.5px;
+    margin-top: 4px;
+  }
+  .tray {
+    margin-top: 8px;
+  }
+  .slot {
+    width: 30px;
+    height: 34px;
+    font-size: 17px;
+  }
+  .player {
+    top: max(8px, env(safe-area-inset-top));
+    right: max(10px, env(safe-area-inset-right));
+    min-width: 0;
+    padding: 5px 10px 5px 5px;
+    gap: 8px;
+  }
+  .pc-ring {
+    width: 36px;
+    height: 36px;
+  }
+  .pc-ring b {
+    font-size: 14px;
+  }
+  .pc-main {
+    width: 92px;
+  }
+  .pc-xptext {
+    display: none;
+  }
+  .gains {
+    top: calc(max(8px, env(safe-area-inset-top)) + 52px);
+    right: max(10px, env(safe-area-inset-right));
+  }
+  .rooms {
+    top: calc(max(8px, env(safe-area-inset-top)) + 56px);
+    bottom: max(8px, env(safe-area-inset-bottom));
+    right: max(10px, env(safe-area-inset-right));
+    transform: none;
+    justify-content: center;
+    padding: 4px;
+    gap: 2px;
+    overflow-y: auto;
+    max-height: none;
+    background: none;
+    border: 0;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .room-chip {
+    padding: 6px;
+    background: var(--panel);
+    border-color: var(--line);
+  }
+  .room-chip span,
+  .room-chip i {
+    display: none;
+  }
+  .danger {
+    top: max(8px, env(safe-area-inset-top));
+    padding: 6px 12px;
+  }
+  .danger-bar {
+    width: 80px;
+  }
+  .toolbar {
+    bottom: max(8px, env(safe-area-inset-bottom));
+    gap: 2px;
+    padding: 5px;
+  }
+  .toolbar button {
+    width: 40px;
+    height: 40px;
+  }
+  .toasts {
+    top: calc(max(8px, env(safe-area-inset-top)) + 48px);
+    width: min(420px, 50vw);
+  }
+  .ach-stack {
+    top: calc(max(8px, env(safe-area-inset-top)) + 56px);
+    right: 64px;
+  }
+  .modal-root {
+    padding: 8px;
+  }
+  .modal {
+    max-height: calc(100dvh - 16px);
+    padding: 20px 20px 16px;
+  }
+  .arcade-canvas {
+    max-height: 70dvh;
+    width: auto;
+  }
+  .levelup {
+    top: 50%;
+    padding: 14px 30px;
+  }
+  .levelup b {
+    font-size: 48px;
+  }
+}

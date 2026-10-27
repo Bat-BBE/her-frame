@@ -54,6 +54,14 @@ class Sound {
     wet.gain.value = 0.35;
     this.echo.connect(fb).connect(this.echo);
     this.echo.connect(wet).connect(this.master);
+
+    // Mobile browsers suspend (iOS: "interrupt") the context when the tab is
+    // backgrounded, the screen locks or a call comes in, and never resume it on
+    // their own. Resume on return and on the next touch, which iOS requires.
+    const wake = () => { if (ctx.state !== 'running') void ctx.resume(); };
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) wake(); });
+    window.addEventListener('pointerdown', wake, true);
+    window.addEventListener('pageshow', wake);
   }
 
   setMuted(m: boolean) {

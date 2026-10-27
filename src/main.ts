@@ -201,10 +201,17 @@ let down: { x: number; y: number; t: number } | null = null;
 let hoverId: string | null = null;
 let pointer: { x: number; y: number } | null = null;
 
+// Pointers currently on the canvas. A pinch/two-finger gesture is never a tap, even
+// when one finger barely moves, so it cancels the pending tap for the whole gesture.
+const touching = new Set<number>();
 canvas.addEventListener('pointerdown', (e) => {
-  down = { x: e.clientX, y: e.clientY, t: performance.now() };
+  touching.add(e.pointerId);
+  down = touching.size === 1 ? { x: e.clientX, y: e.clientY, t: performance.now() } : null;
 });
+const release = (e: PointerEvent) => { touching.delete(e.pointerId); };
+canvas.addEventListener('pointercancel', (e) => { release(e); down = null; });
 canvas.addEventListener('pointerup', (e) => {
+  release(e);
   if (!down || !started) return;
   const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
   if (moved < 8 && performance.now() - down.t < 700) {
@@ -221,7 +228,8 @@ canvas.addEventListener('pointerup', (e) => {
 canvas.addEventListener('pointermove', (e) => {
   if (e.pointerType === 'mouse') pointer = { x: e.clientX, y: e.clientY };
 });
-canvas.addEventListener('pointerleave', () => {
+canvas.addEventListener('pointerleave', (e) => {
+  if (e.pointerType !== 'mouse') return;
   pointer = null;
   setHover(null);
 });
@@ -243,6 +251,10 @@ function setHover(id: string | null) {
     sound.hover();
   }
 }
+
+// iOS Safari ignores user-scalable and pinch-zooms the whole page (HUD included)
+// when a pinch lands outside the canvas; the 3D view has its own pinch zoom.
+document.addEventListener('gesturestart', (e) => e.preventDefault());
 
 // ------------------------------------------------------------------ toolbar
 document.getElementById('toolbar')!.addEventListener('click', (e) => {
@@ -315,7 +327,7 @@ startBtn.addEventListener('click', () => {
 
 // ------------------------------------------------------------------ loop
 let resizeRaf = 0;
-addEventListener('resize', () => {
+const onResize = () => {
   if (resizeRaf) return;
   resizeRaf = requestAnimationFrame(() => {
     resizeRaf = 0;
@@ -323,7 +335,10 @@ addEventListener('resize', () => {
     renderer.setSize(innerWidth, innerHeight);
     composer.setSize(innerWidth, innerHeight);
   });
-});
+};
+addEventListener('resize', onResize);
+// Some mobile browsers report the new size only after the rotation settles.
+addEventListener('orientationchange', () => setTimeout(onResize, 250));
 
 const clock = new THREE.Clock();
 let t = 0;

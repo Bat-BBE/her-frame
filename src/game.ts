@@ -1822,12 +1822,41 @@ export class Game {
   takePhoto() {
     ui.flash('#ffffff', 0.9);
     sound.tick();
-    const a = document.createElement('a');
-    a.href = this.c.snapshot();
-    a.download = 'little-house.png';
-    a.click();
+    const url = this.c.snapshot();
     this.progress.stat('photos');
     this.progress.quest('photo');
+    void this.savePhoto(url);
+  }
+
+  /** Phones get the native share sheet ("Save Image" / send); a data-URL download
+   *  link does nothing on iOS and can navigate away from the game on some Androids. */
+  private async savePhoto(url: string) {
+    const name = 'little-house.png';
+    // Decoded synchronously: iOS only allows share() while the tap's user activation
+    // is still fresh, and awaiting a fetch first can use it up.
+    const bin = atob(url.slice(url.indexOf(',') + 1));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const blob = new Blob([bytes], { type: 'image/png' });
+    const file = new File([blob], name, { type: 'image/png' });
+    const touch = matchMedia('(pointer: coarse)').matches;
+    if (touch && navigator.canShare?.({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: 'Little World' });
+        ui.toast('Зураг бэлэн!');
+        return;
+      } catch (e) {
+        if ((e as DOMException).name === 'AbortError') return;
+      }
+    }
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = name;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(href), 4000);
     ui.toast('Зураг хадгалагдлаа!');
   }
 
